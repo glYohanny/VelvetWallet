@@ -36,6 +36,7 @@ from . import bitacora, config, db
 from .sesion_actual import usuario_actual
 
 # La ingesta vive en backend/ingesta; se corre desde backend/, así que es importable.
+from ingesta.cifrado import descifrar_alcance
 from ingesta.cliente_sfa import AutorizacionFallida, ClienteSFA, ReautorizacionRequerida
 from ingesta.normalizador import etiqueta_tipo_cuenta
 from ingesta.repositorio import Repositorio
@@ -287,7 +288,7 @@ def listar_conexiones(usuario_id: str = Depends(usuario_actual)):
     ahora = datetime.now(timezone.utc)
     conexiones = []
     for r in filas:
-        alcance = r["alcance"] or {}
+        alcance = descifrar_alcance(r["alcance"], r["id"]) or {}
         autorizada = bool(alcance.get("refreshToken"))
         estado = _estado_visible(r["estado"], autorizada, r["expira"], ahora)
         ultima = r["ultima_sincronizacion"]

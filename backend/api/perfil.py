@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from . import bitacora, db
+from ingesta.cifrado import ctx_sueldo, cifrar_numero, descifrar_numero
 from .sesion_actual import usuario_actual
 
 from motor.sueldo import Abono, Sueldo, detectar
@@ -83,7 +84,7 @@ def sueldo_mensual(conn, usuario_id: str) -> float:
         "SELECT sueldo_declarado FROM usuario WHERE id = %s", (usuario_id,)
     ).fetchone()
     if fila and fila["sueldo_declarado"] is not None:
-        return float(fila["sueldo_declarado"])
+        return descifrar_numero(fila["sueldo_declarado"], ctx_sueldo(usuario_id))
     s = sueldo_detectado(conn, usuario_id)
     return s.monto if s else 0.0
 
@@ -110,9 +111,8 @@ def ver_perfil(usuario_id: str = Depends(usuario_actual)):
             raise HTTPException(status_code=404, detail="Usuario no encontrado.")
         detectado = sueldo_detectado(conn, usuario_id)
 
-    declarado = fila["sueldo_declarado"]
     return {
-        "sueldoDeclarado": float(declarado) if declarado is not None else None,
+        "sueldoDeclarado": descifrar_numero(fila["sueldo_declarado"], ctx_sueldo(usuario_id)),
         "sueldoDetectado": _describir(detectado),
     }
 
@@ -132,7 +132,8 @@ def declarar_sueldo(datos: SueldoDeclarado, peticion: Request,
         fila = conn.execute(
             """UPDATE usuario SET sueldo_declarado = %s WHERE id = %s
                RETURNING sueldo_declarado""",
-            (monto, usuario_id),
+            # Cifrado en la aplicación (RF-31): en la base queda texto ilegible.
+            (cifrar_numero(monto, ctx_sueldo(usuario_id)), usuario_id),
         ).fetchone()
         if fila is None:
             raise HTTPException(status_code=404, detail="Usuario no encontrado.")
@@ -142,8 +143,7 @@ def declarar_sueldo(datos: SueldoDeclarado, peticion: Request,
                            ip=bitacora.ip_de(peticion))
         detectado = sueldo_detectado(conn, usuario_id)
 
-    declarado = fila["sueldo_declarado"]
     return {
-        "sueldoDeclarado": float(declarado) if declarado is not None else None,
+        "sueldoDeclarado": descifrar_numero(fila["sueldo_declarado"], ctx_sueldo(usuario_id)),
         "sueldoDetectado": _describir(detectado),
     }

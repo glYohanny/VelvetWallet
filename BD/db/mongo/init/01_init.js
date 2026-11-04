@@ -7,6 +7,9 @@
 // Nota de diseño: en PAYLOAD_CRUDO el campo `payload` NO se restringe: su razón
 // de ser es guardar el JSON tal como lo entregó la institución, sea cual sea su
 // forma (RF-06 / RNF-32). Solo se valida el "sobre" (de dónde vino y cuándo).
+// La aplicación guarda ese JSON cifrado con AES-256-GCM (RF-31) como
+// { cifrado: "enc:v1:..." }: se recupera idéntico y cualquier alteración se
+// detecta al descifrar. El sobre queda en claro para buscar y borrar.
 // ============================================================================
 
 // El init corre ya posicionado en la base MONGO_INITDB_DATABASE.

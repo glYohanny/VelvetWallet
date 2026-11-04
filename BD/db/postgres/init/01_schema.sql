@@ -15,9 +15,11 @@
 --    migraciones versionadas y reversibles).
 --  · Los importes se guardan como NUMERIC. En CLP no hay decimales (RNF-29),
 --    pero NUMERIC deja el esquema abierto a otras monedas sin cambios.
---  · Cifrado en reposo (RNF-16 / RF-31): se resuelve a nivel de almacenamiento
---    o con pgcrypto sobre las columnas sensibles en fase de implementación;
---    el esquema deja marcadas cuáles son (ver COMMENT ON).
+--  · Cifrado en reposo (RNF-16 / RF-31), en dos capas: el almacenamiento del
+--    motor cifra el disco completo, y la aplicación cifra con AES-256-GCM las
+--    columnas más sensibles antes de escribirlas (backend/ingesta/cifrado.py).
+--    Esas columnas son texto con el formato enc:v1:... (ver COMMENT ON). La
+--    clave vive fuera de la base, en VELVET_CLAVE_CIFRADO.
 -- =============================================================================
 
 BEGIN;
@@ -35,13 +37,13 @@ CREATE TABLE usuario (
     email            citext        NOT NULL UNIQUE,
     nombre           varchar(120)  NOT NULL,
     hash_password    varchar(255)  NOT NULL,
-    sueldo_declarado numeric(15,2)          CHECK (sueldo_declarado >= 0),
+    sueldo_declarado text,
     created_at       timestamptz   NOT NULL DEFAULT now()
 );
 
 COMMENT ON TABLE  usuario                  IS 'Titular de la cuenta Velvet Wallet.';
 COMMENT ON COLUMN usuario.hash_password    IS 'Hash de la contraseña (Argon2/bcrypt). Nunca la contraseña en claro.';
-COMMENT ON COLUMN usuario.sueldo_declarado IS 'Sueldo configurado por el usuario (RF-36). Dato sensible.';
+COMMENT ON COLUMN usuario.sueldo_declarado IS 'Sueldo configurado por el usuario (RF-36). Dato sensible: cifrado por la aplicación (RF-31), por eso es texto. La validación del monto la hace la API.';
 
 -- =============================================================================
 -- 2. INSTITUCION
@@ -118,7 +120,7 @@ CREATE TABLE consentimiento (
 );
 
 COMMENT ON TABLE  consentimiento             IS 'Consentimiento granular otorgado por el usuario (RF-02 / RF-27).';
-COMMENT ON COLUMN consentimiento.alcance_rar IS 'Detalle RAR: a qué cuentas y datos se accede y por cuánto tiempo (Rich Authorization Requests).';
+COMMENT ON COLUMN consentimiento.alcance_rar IS 'Detalle RAR: a qué cuentas y datos se accede y por cuánto tiempo (Rich Authorization Requests). refreshToken, rutCliente y nombreCliente van cifrados por la aplicación (RF-31).';
 
 -- =============================================================================
 -- 6b. CONSENTIMIENTO_TRATAMIENTO  (finalidades distintas del acceso bancario)

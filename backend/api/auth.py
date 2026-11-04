@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from . import db, seguridad
+from ingesta.cifrado import ctx_sueldo, descifrar_numero
 
 router = APIRouter(prefix="/api/auth", tags=["Autenticación"])
 
@@ -42,7 +43,7 @@ def _armar_sesion(fila) -> dict:
             "id": str(id_),
             "nombre": nombre,
             "email": str(email),
-            "sueldoDeclarado": float(sueldo) if sueldo is not None else None,
+            "sueldoDeclarado": descifrar_numero(sueldo, ctx_sueldo(id_)),
             "creadoEn": creado.isoformat() if hasattr(creado, "isoformat") else str(creado),
         },
     }

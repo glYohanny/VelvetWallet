@@ -108,8 +108,9 @@ def _obtener_acceso(repo: Repositorio, banco: ClienteSFA, conexion_id: str,
         # A qué cliente del banco corresponde esta conexión.
         "rutCliente": cliente.get("rut"),
         "nombreCliente": cliente.get("nombre"),
-        # Para renovar el acceso sin volver a pedir la clave. En producción se
-        # guarda cifrado. La clave del banco NO se guarda nunca.
+        # Para renovar el acceso sin volver a pedir la clave. Se guarda cifrado
+        # (ver Repositorio.registrar_consentimiento). La clave del banco NO se
+        # guarda nunca.
         "refreshToken": refresh,
     }
     return consent_id, info, alcance

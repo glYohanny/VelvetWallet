@@ -289,3 +289,133 @@ class TestDerechosDelTitular:
             assert conn.execute(
                 "SELECT count(*) FROM bitacora_auditoria WHERE usuario_id IS NOT NULL"
             ).fetchone()[0] == 0
+
+
+# ───────────────── cifrado en reposo (RF-31), mirando la base ─────────────────
+
+class TestCifradoEnReposo:
+    """
+    Lo que vería alguien que lee la base directamente (un respaldo filtrado,
+    credenciales robadas): los datos sensibles no aparecen en claro, y la
+    aplicación los sigue usando igual que antes.
+    """
+
+    @pytest.fixture
+    def usuario(self, api, efs, base_limpia):
+        x = registrar(api, "Usuario X", "x@prueba.cl")
+        _, r = vincular(api, efs, x, *CAMILA)
+        assert r is not None and r.status_code == 200
+        return x
+
+    def test_el_sueldo_queda_cifrado_y_se_sigue_leyendo(self, api, usuario, url_base):
+        import psycopg
+
+        r = api.put("/api/perfil/sueldo", json={"monto": 1234567}, headers=usuario)
+        assert r.status_code == 200 and r.json()["sueldoDeclarado"] == 1234567
+
+        with psycopg.connect(url_base) as conn:
+            crudo = conn.execute("SELECT sueldo_declarado FROM usuario").fetchone()[0]
+        assert crudo.startswith("enc:v1:") and "1234567" not in crudo
+
+        assert api.get("/api/perfil", headers=usuario).json()["sueldoDeclarado"] == 1234567
+        sesion = api.post("/api/auth/sesion",
+                          json={"email": "x@prueba.cl", "password": CLAVE_VELVET}).json()
+        assert sesion["usuario"]["sueldoDeclarado"] == 1234567
+        # La copia de portabilidad es para la persona: va legible.
+        exportado = api.get("/api/privacidad/exportar", headers=usuario).json()
+        assert exportado["titular"]["sueldo_declarado"] == 1234567
+
+    def test_el_token_y_el_rut_del_banco_quedan_cifrados(self, api, usuario, url_base):
+        import json
+
+        import psycopg
+
+        with psycopg.connect(url_base) as conn:
+            alcance = conn.execute("SELECT alcance_rar FROM consentimiento").fetchone()[0]
+        texto = json.dumps(alcance, ensure_ascii=False)
+        assert alcance["refreshToken"].startswith("enc:v1:")
+        assert "15.432.876-9" not in texto and "Camila" not in texto
+        assert "ReadAccountsBasic" in alcance["permisos"]   # lo que se muestra, legible
+
+        # La app sigue viendo a qué cliente está atada la conexión...
+        conexion = api.get("/api/conexiones", headers=usuario).json()["conexiones"][0]
+        assert conexion["rutCliente"] == "15.432.876-9" and conexion["autorizada"]
+        # ...y re-sincronizar usa el token descifrado sin pedir la clave.
+        assert api.post("/api/conexiones", json={}, headers=usuario).status_code == 200
+
+    def test_el_payload_crudo_queda_cifrado_e_intacto(self, api, usuario, url_base):
+        import psycopg
+
+        from ingesta import config
+        from ingesta.conexiones_bd import mongo
+        from ingesta.repositorio import Repositorio
+
+        doc = mongo()[config.MONGO_DB].payload_crudo.find_one()
+        assert set(doc["payload"]) == {"cifrado"}
+        assert "transactionID" not in str(doc["payload"])
+
+        with psycopg.connect(url_base) as conn:
+            ref, id_externo = conn.execute(
+                "SELECT payload_crudo_ref, id_externo FROM transaccion LIMIT 1").fetchone()
+        repo = Repositorio()
+        try:
+            original = repo.leer_crudo(ref)
+        finally:
+            repo.close()
+        # Se recupera el JSON tal como lo mandó el banco (RF-06).
+        assert original["transactionID"] == id_externo
+
+    def test_los_datos_anteriores_se_cifran_con_el_script(self, api, usuario, url_base):
+        """Una base de antes del cifrado: columna numérica y todo en claro."""
+        import importlib
+
+        import psycopg
+        from psycopg.types.json import Json
+
+        from ingesta import config, esquema
+        from ingesta.conexiones_bd import mongo
+        from ingesta.repositorio import Repositorio
+
+        repo = Repositorio()
+        try:
+            cx = repo.conn.execute("SELECT conexion_id FROM consentimiento").fetchone()[0]
+            en_claro = repo.consentimiento_vigente(cx)
+        finally:
+            repo.close()
+        payloads = mongo()[config.MONGO_DB].payload_crudo
+        viejo = payloads.insert_one({"conexion_id": str(cx), "endpoint_origen": "/x",
+                                     "payload": {"transactionID": "TX-VIEJO"},
+                                     "procesado": True}).inserted_id
+
+        with psycopg.connect(url_base) as conn:
+            conn.execute("ALTER TABLE usuario ALTER COLUMN sueldo_declarado TYPE numeric(15,2) "
+                         "USING NULL, ADD CONSTRAINT usuario_sueldo_declarado_check "
+                         "CHECK (sueldo_declarado >= 0)")
+            conn.execute("UPDATE usuario SET sueldo_declarado = 1500000")
+            conn.execute("UPDATE consentimiento SET alcance_rar = %s", (Json(en_claro),))
+
+        esquema._al_dia = False   # como un proceso recién levantado
+        import cifrar_datos_existentes as script
+        importlib.reload(script)
+        try:
+            assert script.main(simular=True) == {"sueldos": 1, "consentimientos": 1,
+                                                 "payloads": 1}
+            assert script.main() == {"sueldos": 1, "consentimientos": 1, "payloads": 1}
+            # Idempotente: la segunda vez no queda nada por hacer.
+            assert script.main() == {"sueldos": 0, "consentimientos": 0, "payloads": 0}
+        finally:
+            esquema._al_dia = False
+
+        with psycopg.connect(url_base) as conn:
+            sueldo, = conn.execute("SELECT sueldo_declarado FROM usuario").fetchone()
+            alcance, = conn.execute("SELECT alcance_rar FROM consentimiento").fetchone()
+        assert sueldo.startswith("enc:v1:") and alcance["refreshToken"].startswith("enc:v1:")
+        assert set(payloads.find_one({"_id": viejo})["payload"]) == {"cifrado"}
+
+        assert api.get("/api/perfil", headers=usuario).json()["sueldoDeclarado"] == 1500000
+        assert api.post("/api/conexiones", json={}, headers=usuario).status_code == 200
+        repo = Repositorio()
+        try:
+            assert repo.leer_crudo(str(viejo)) == {"transactionID": "TX-VIEJO"}
+        finally:
+            repo.close()

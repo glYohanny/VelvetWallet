@@ -17,11 +17,15 @@ entre segundos y más de un minuto.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
+from bson import ObjectId
 from psycopg.types.json import Json
 
-from . import config
+from . import config, esquema
+from .cifrado import (cifrar, cifrar_alcance, ctx_payload, descifrar,
+                      descifrar_alcance)
 from .conexiones_bd import mongo, pool
 
 # Columnas de transaccion que escribe la ingesta, en orden fijo.
@@ -34,36 +38,42 @@ _COLS_TX = ["cuenta_id", "id_externo", "payload_crudo_ref", "monto", "moneda",
 _CORREGIDO = ("EXISTS (SELECT 1 FROM correccion co WHERE co.transaccion_id = transaccion.id"
               " AND co.tipo = 'recategorizar')")
 
-# Bases creadas antes de la columna categoria_origen (el DDL de init solo corre
-# con la base vacía): se agrega una vez por proceso, sin tocar lo que ya hay.
-_ESQUEMA_AL_DIA = False
-
-
-def _asegurar_esquema(conn) -> None:
-    global _ESQUEMA_AL_DIA
-    if _ESQUEMA_AL_DIA:
-        return
-    conn.execute("ALTER TABLE transaccion ADD COLUMN IF NOT EXISTS categoria_origen varchar(80)")
-    conn.commit()
-    _ESQUEMA_AL_DIA = True
-
-
 class Repositorio:
     def __init__(self):
         # Conexión prestada del pool (no se abre una nueva por sincronización)
         # y el cliente de Mongo compartido del proceso. Ver conexiones_bd.py.
         self.conn = pool().getconn()
-        _asegurar_esquema(self.conn)
+        esquema.asegurar(self.conn)
         self._categorias: dict[str, str] | None = None   # nombre → categoria_id
         self.db = mongo()[config.MONGO_DB]
 
     # ── MongoDB: crudo intacto ──────────────────────────────────────────────
+    # El payload se guarda cifrado (RF-31) pero intacto: se cifra el JSON tal
+    # como llegó y se recupera idéntico con leer_crudo(). GCM además detecta
+    # cualquier alteración, así que el crudo sigue sirviendo de prueba (RF-06).
+    # El "sobre" (de qué conexión y endpoint vino, cuándo) queda en claro para
+    # poder buscar y borrar por conexión sin descifrar nada.
+    @staticmethod
+    def _sellar(conexion_id: str, payload: dict) -> dict:
+        return {"cifrado": cifrar(json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                                  ctx_payload(conexion_id))}
+
+    def leer_crudo(self, ref: str) -> dict | None:
+        """El payload tal como lo entregó el banco, descifrado. None si no existe."""
+        doc = self.db.payload_crudo.find_one({"_id": ObjectId(ref)})
+        if doc is None:
+            return None
+        payload = doc["payload"]
+        if isinstance(payload, dict) and set(payload) == {"cifrado"}:
+            return json.loads(descifrar(payload["cifrado"], ctx_payload(doc["conexion_id"])))
+        return payload   # guardado antes del cifrado
+
     def guardar_crudo(self, conexion_id: str, endpoint: str, payload: dict) -> str:
         """Guarda un movimiento crudo y devuelve el ObjectId (24 hex) para la FK."""
         doc = {
             "conexion_id": str(conexion_id),
             "endpoint_origen": endpoint,
-            "payload": payload,
+            "payload": self._sellar(conexion_id, payload),
             "procesado": True,
             "recibido_at": datetime.utcnow(),
         }
@@ -82,7 +92,7 @@ class Repositorio:
             {
                 "conexion_id": str(conexion_id),
                 "endpoint_origen": endpoint,
-                "payload": p,
+                "payload": self._sellar(conexion_id, p),
                 "procesado": True,
                 "recibido_at": ahora,
             }
@@ -97,7 +107,11 @@ class Repositorio:
         """
         Deja registrado el consentimiento vigente de la conexión (RF-02 / RF-27).
         Si ya hay uno vigente, lo refresca; si no, lo crea.
+
+        El refresh token y la identidad del cliente del banco se guardan
+        cifrados (RF-31); el resto del alcance queda en claro.
         """
+        alcance_rar = cifrar_alcance(alcance_rar, conexion_id)
         fila = self.conn.execute(
             """UPDATE consentimiento
                SET alcance_rar = %s, fecha_expiracion = %s
@@ -127,7 +141,7 @@ class Repositorio:
                ORDER BY fecha_inicio DESC LIMIT 1""",
             (conexion_id,),
         ).fetchone()
-        return fila[0] if fila else None
+        return descifrar_alcance(fila[0], conexion_id) if fila else None
 
     def eliminar_conexion(self, conexion_id: str) -> None:
         """

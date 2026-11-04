@@ -27,7 +27,7 @@ from psycopg.rows import dict_row, tuple_row
 from psycopg_pool import ConnectionPool
 from pymongo import MongoClient
 
-from . import config
+from . import config, esquema
 
 _candado = threading.Lock()
 _pool: ConnectionPool | None = None
@@ -62,6 +62,7 @@ def pool() -> ConnectionPool:
 @contextmanager
 def conexion(diccionarios: bool = False):
     with pool().connection() as conn:
+        esquema.asegurar(conn)   # una vez por proceso; después no hace nada
         conn.row_factory = dict_row if diccionarios else tuple_row
         try:
             yield conn

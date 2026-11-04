@@ -111,10 +111,52 @@ Todo va filtrado por el usuario del token (JWT): cada usuario ve solo lo suyo.
 
 **La clave del banco nunca pasa por Velvet**: el usuario la escribe en la página del banco
 (ver `simulador/README.md`, "Autorización en el sitio del banco"). Velvet guarda solo el refresh
-token del permiso (en producción, cifrado).
+token del permiso, cifrado (ver abajo).
 
-Si la base se creó antes de la columna `transaccion.categoria_origen`, la ingesta la agrega sola la
-primera vez (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`).
+Si la base se creó con un esquema anterior (sin `transaccion.categoria_origen`, o con
+`usuario.sueldo_declarado` numérico), el backend la pone al día solo la primera vez que se conecta
+(`ingesta/esquema.py`, idempotente).
+
+## Cifrado en reposo (RF-31)
+
+Dos capas. El **almacenamiento** de Neon y Atlas cifra el disco completo: protege si alguien se
+lleva el disco o un respaldo físico. La **aplicación** cifra además, antes de escribir, lo más
+sensible: protege también si alguien llega a *leer* la base (un respaldo filtrado, credenciales
+robadas), porque lo que ve es `enc:v1:...`.
+
+| Qué se cifra en la aplicación | Dónde | Por qué |
+|---|---|---|
+| Refresh token del banco | `consentimiento.alcance_rar` | Es una credencial: con él se leen los datos de la persona en su banco |
+| RUT y nombre del cliente del banco | `consentimiento.alcance_rar` | Identifican a la persona |
+| Payload crudo | Mongo `payload_crudo.payload` | Es la respuesta íntegra del banco |
+| Sueldo declarado | `usuario.sueldo_declarado` | Dato sensible declarado por la persona |
+
+Los montos, fechas y glosas del modelo canónico **no** se cifran en la aplicación: sobre ellos se
+suman, filtran y proyectan en SQL, y cifrarlos obligaría a traer todo a memoria para cada cálculo.
+Quedan cubiertos por la capa del almacenamiento.
+
+- **AES-256-GCM** (`ingesta/cifrado.py`, librería `cryptography`): cifrado autenticado. Un dato
+  alterado no se descifra, en vez de entregarse corrupto, y por eso el payload crudo sigue sirviendo
+  como prueba de lo que mandó el banco (RF-06). `Repositorio.leer_crudo(ref)` lo devuelve idéntico.
+- **Cada valor queda atado a su registro**: el campo y el id van como dato asociado (AAD). El sueldo
+  cifrado de una persona copiado en la fila de otra, o el token de un banco copiado en otra
+  conexión, no se descifra.
+- **La clave no está en la base ni en el repo**: va en `VELVET_CLAVE_CIFRADO` en `backend/.env`.
+  **Todos los que usen la misma base necesitan la misma clave.** Sin clave configurada se usa una
+  de desarrollo que no protege nada, y el log lo avisa.
+
+```bash
+python -m ingesta.cifrado --generar-clave     # una clave nueva, para el .env
+python cifrar_datos_existentes.py --simular   # cuántos datos siguen en claro
+python cifrar_datos_existentes.py             # cifrarlos (idempotente)
+```
+
+**Rotar la clave:** la nueva en `VELVET_CLAVE_CIFRADO`, la vieja en `VELVET_CLAVES_ANTERIORES`,
+correr `cifrar_datos_existentes.py` y recién entonces quitar la vieja. Cada valor guarda la huella
+de la clave que lo cifró, así que conviven mientras dura la rotación.
+
+Lo que se le entrega a la persona (la app y la exportación de portabilidad) va descifrado: el
+cifrado protege el dato guardado, no se lo esconde a su dueño.
 
 ## Motor de proyección (Monte Carlo)
 

@@ -22,6 +22,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from . import bitacora, db
+from ingesta.cifrado import ctx_sueldo, descifrar_numero
 from .sesion_actual import usuario_actual
 
 router = APIRouter(prefix="/api/privacidad", tags=["Privacidad"])
@@ -266,6 +267,10 @@ def exportar(peticion: Request, usuario_id: str = Depends(usuario_actual)):
             "SELECT nombre, email, sueldo_declarado, created_at FROM usuario WHERE id = %s",
             (usuario_id,),
         ).fetchone()
+        if usuario:
+            # La copia es para la persona: el sueldo va legible, no cifrado.
+            usuario["sueldo_declarado"] = descifrar_numero(usuario["sueldo_declarado"],
+                                                           ctx_sueldo(usuario_id))
 
         cuentas = conn.execute(
             """SELECT c.id_externo, c.tipo, c.numero_enmascarado, c.moneda, c.saldo,
