@@ -33,6 +33,10 @@ const ICONO: Record<string, NombreIcono> = {
   "datos.importar": "document-text-outline",
   "datos.registrar_manual": "cash-outline",
   "datos.borrar_manual": "remove-circle-outline",
+  "correccion.excluir": "eye-off-outline",
+  "correccion.duplicado": "copy-outline",
+  "correccion.dividir": "git-branch-outline",
+  "correccion.deshacer": "arrow-undo-outline",
 };
 
 /** Agrupa por día conservando el orden que vino del servidor. */

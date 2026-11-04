@@ -122,6 +122,15 @@ export type Correccion = {
   tipo: "recategorizar" | "marcar_duplicado" | "excluir" | "dividir";
   fecha: string;
   detalle?: string;
+  /** Esta fila deshace la anterior del mismo tipo. La historia no se borra. */
+  deshecha?: boolean;
+};
+
+/** Una parte de un gasto repartido entre categorías. Las partes suman el monto. */
+export type Parte = {
+  /** Con signo, como el movimiento. */
+  monto: number;
+  categoria: string;
 };
 
 /**
@@ -161,6 +170,15 @@ export type Movimiento = {
   esRecurrente: boolean;
   /** No es gasto: transferencia entre cuentas propias, por ejemplo. */
   excluido: boolean;
+  /** Por qué no cuenta: lo dijo la persona, o es duplicado de otro. null si cuenta. */
+  motivoExclusion?: "no_es_gasto" | "duplicado" | null;
+  /** Si es duplicado: el id del movimiento que sí cuenta. */
+  duplicadoDe?: string | null;
+  /**
+   * Si la persona lo repartió entre categorías. El total sigue siendo `monto`;
+   * cambia en qué categorías cuenta. null si no está dividido.
+   */
+  partes?: Parte[] | null;
   /** Por dónde entró primero. */
   origen: OrigenMovimiento;
   /**

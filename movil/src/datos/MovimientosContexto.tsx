@@ -92,6 +92,8 @@ type ValorMovimientos = {
   quitarMovimiento: (id: string) => void;
   /** Vuelve a traer movimientos e instituciones, p. ej. después de importar una cartola. */
   recargar: () => Promise<void>;
+  /** Pone en la lista el movimiento tal como lo devolvió el servidor después de corregirlo. */
+  reemplazarMovimiento: (m: Movimiento) => void;
 };
 
 const Contexto = createContext<ValorMovimientos | null>(null);
@@ -335,6 +337,12 @@ export function ProveedorMovimientos({ children }: { children: ReactNode }) {
     refrescarConexiones();
   }, [refrescarConexiones]);
 
+  const reemplazarMovimiento = useCallback((m: Movimiento) => {
+    const lista = actualesRef.current.map((x) => (x.id === m.id ? m : x));
+    actualesRef.current = lista;
+    setMovimientos(lista);
+  }, []);
+
   const quitarMovimiento = useCallback((id: string) => {
     const lista = actualesRef.current.filter((x) => x.id !== id);
     actualesRef.current = lista;
@@ -378,8 +386,9 @@ export function ProveedorMovimientos({ children }: { children: ReactNode }) {
       agregarMovimiento,
       quitarMovimiento,
       recargar,
+      reemplazarMovimiento,
     }),
-    [movimientos, novedades, sincronizando, cargaInicial, ultimaSincronizacion, error, sincronizar, irAlBanco, completarVinculacion, desvincular, clienteBanco, conexiones, corregirCategoria, marcarVistas, agregarMovimiento, quitarMovimiento, recargar],
+    [movimientos, novedades, sincronizando, cargaInicial, ultimaSincronizacion, error, sincronizar, irAlBanco, completarVinculacion, desvincular, clienteBanco, conexiones, corregirCategoria, marcarVistas, agregarMovimiento, quitarMovimiento, recargar, reemplazarMovimiento],
   );
 
   return <Contexto.Provider value={valor}>{children}</Contexto.Provider>;

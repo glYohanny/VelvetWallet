@@ -611,3 +611,140 @@ class TestCartolasYCargaManual:
                         json={"confirmacion": "x@prueba.cl"}, headers=usuario)
         assert r.status_code == 200
         assert crudos.count_documents(suyas) == 0
+
+
+# ─────────────── correcciones del usuario sobre un movimiento (RF-14) ───────────────
+
+class TestCorrecciones:
+    """
+    La regla: la corrección se guarda aparte y el dato del banco no se toca.
+    Cada prueba mira también la base, no solo la respuesta.
+    """
+
+    @pytest.fixture
+    def usuario(self, api, efs, base_limpia):
+        x = registrar(api, "Usuario X", "x@prueba.cl")
+        _, r = vincular(api, efs, x, *CAMILA)
+        assert r is not None and r.status_code == 200
+        return x
+
+    @staticmethod
+    def _gasto(api, cabeceras, excepto=()):
+        return next(m for m in movimientos(api, cabeceras)
+                    if m["monto"] < 0 and not m["excluido"] and m["id"] not in excepto)
+
+    @staticmethod
+    def _resumen(api, cabeceras):
+        return api.get("/api/resumen", headers=cabeceras).json()["gastos"]
+
+    @staticmethod
+    def _crudo(url_base, tid):
+        import psycopg
+        with psycopg.connect(url_base) as conn:
+            return conn.execute("SELECT monto, glosa_original, fecha, payload_crudo_ref "
+                                "FROM transaccion WHERE id = %s", (tid,)).fetchone()
+
+    def test_excluir_deja_de_sumar_y_se_puede_deshacer(self, api, usuario, url_base):
+        m = self._gasto(api, usuario)
+        antes, dato = self._resumen(api, usuario), self._crudo(url_base, m["id"])
+
+        r = api.post(f"/api/movimientos/{m['id']}/excluir", headers=usuario)
+        assert r.status_code == 200, r.text
+        assert (r.json()["excluido"], r.json()["motivoExclusion"]) == (True, "no_es_gasto")
+        assert self._resumen(api, usuario) == pytest.approx(antes + m["monto"])
+        assert self._crudo(url_base, m["id"]) == dato            # el dato del banco, intacto
+        # Doble toque: no es un error ni una segunda corrección.
+        assert api.post(f"/api/movimientos/{m['id']}/excluir", headers=usuario).status_code == 200
+
+        # Sobrevive a una resincronización con el banco.
+        api.post("/api/conexiones", json={}, headers=usuario)
+        assert next(x for x in movimientos(api, usuario) if x["id"] == m["id"])["excluido"]
+
+        r = api.delete(f"/api/movimientos/{m['id']}/exclusion", headers=usuario)
+        assert r.json()["excluido"] is False
+        assert self._resumen(api, usuario) == pytest.approx(antes)
+        tipos = [(c["tipo"], c["deshecha"]) for c in r.json()["correcciones"]]
+        assert tipos == [("excluir", False), ("excluir", True)]   # la historia completa
+
+    def test_marcar_duplicado(self, api, usuario, url_base):
+        original = self._gasto(api, usuario)
+        # El mismo gasto anotado a mano: el caso típico de duplicado.
+        copia = api.post("/api/movimientos", headers=usuario, json={
+            "monto": -original["monto"], "glosa": "lo mismo, anotado a mano",
+            "fecha": original["fecha"][:10]}).json()
+        antes = self._resumen(api, usuario)
+
+        r = api.post(f"/api/movimientos/{copia['id']}/duplicado", headers=usuario,
+                     json={"duplicadoDe": original["id"]})
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert (d["excluido"], d["motivoExclusion"], d["duplicadoDe"]) == (
+            True, "duplicado", original["id"])
+        assert self._resumen(api, usuario) == pytest.approx(antes + copia["monto"])
+
+        # El original ya no se puede excluir: no quedaría ninguno contando.
+        r = api.post(f"/api/movimientos/{original['id']}/excluir", headers=usuario)
+        assert r.status_code == 409
+        r = api.post(f"/api/movimientos/{original['id']}/duplicado", headers=usuario,
+                     json={"duplicadoDe": copia["id"]})
+        assert r.status_code == 422
+
+    def test_duplicado_exige_el_mismo_monto_y_otro_movimiento(self, api, usuario):
+        a = self._gasto(api, usuario)
+        b = next(m for m in movimientos(api, usuario)
+                 if m["monto"] < 0 and m["monto"] != a["monto"])
+        assert api.post(f"/api/movimientos/{a['id']}/duplicado", headers=usuario,
+                        json={"duplicadoDe": b["id"]}).status_code == 422
+        assert api.post(f"/api/movimientos/{a['id']}/duplicado", headers=usuario,
+                        json={"duplicadoDe": a["id"]}).status_code == 422
+
+    def test_dividir_reparte_sin_cambiar_el_total(self, api, usuario, url_base):
+        m = next(x for x in movimientos(api, usuario) if x["monto"] <= -10000)
+        total = int(-m["monto"])
+        antes, dato = self._resumen(api, usuario), self._crudo(url_base, m["id"])
+        partes = [{"monto": total - 4000, "categoria": "Supermercado"},
+                  {"monto": 4000, "categoria": "Hogar"}]
+
+        r = api.put(f"/api/movimientos/{m['id']}/division", headers=usuario, json={"partes": partes})
+        assert r.status_code == 200, r.text
+        assert r.json()["partes"] == [{"monto": -(total - 4000), "categoria": "Supermercado"},
+                                      {"monto": -4000.0, "categoria": "Hogar"}]
+        assert self._resumen(api, usuario) == pytest.approx(antes)   # el total no cambia
+        assert self._crudo(url_base, m["id"]) == dato
+
+        # Las partes tienen que sumar exactamente el monto.
+        malas = [{"monto": total, "categoria": "Supermercado"}, {"monto": 1, "categoria": "Hogar"}]
+        r = api.put(f"/api/movimientos/{m['id']}/division", headers=usuario, json={"partes": malas})
+        assert r.status_code == 422 and "suman" in r.json()["detail"]
+
+        r = api.delete(f"/api/movimientos/{m['id']}/division", headers=usuario)
+        assert r.json()["partes"] is None
+
+    def test_validaciones_de_la_division(self, api, usuario):
+        m = self._gasto(api, usuario)
+        total = int(-m["monto"])
+
+        def dividir(partes, mid=m["id"]):
+            return api.put(f"/api/movimientos/{mid}/division", headers=usuario,
+                           json={"partes": partes}).status_code
+        assert dividir([{"monto": total, "categoria": "Supermercado"}]) == 422     # una sola parte
+        assert dividir([{"monto": total - 1, "categoria": "Inventada"},
+                        {"monto": 1, "categoria": "Hogar"}]) == 422
+        assert dividir([{"monto": total - 1, "categoria": "Hogar"},
+                        {"monto": 1, "categoria": "Hogar"}]) == 422                 # repetida
+        abono = next(x for x in movimientos(api, usuario) if x["monto"] > 0)
+        assert dividir([{"monto": 1, "categoria": "Hogar"}, {"monto": 1, "categoria": "Hogar"}],
+                       abono["id"]) == 422
+
+    def test_las_correcciones_de_otro_no_se_alcanzan(self, api, efs, usuario):
+        otro = registrar(api, "Usuario Y", "y@prueba.cl")
+        vincular(api, efs, otro, *DIEGO)
+        ajeno = self._gasto(api, otro)
+        assert api.post(f"/api/movimientos/{ajeno['id']}/excluir",
+                        headers=usuario).status_code == 404
+        assert api.put(f"/api/movimientos/{ajeno['id']}/division", headers=usuario, json={
+            "partes": [{"monto": 1, "categoria": "Hogar"},
+                       {"monto": 1, "categoria": "Hogar"}]}).status_code == 404
+        mio = self._gasto(api, usuario)
+        assert api.post(f"/api/movimientos/{mio['id']}/duplicado", headers=usuario,
+                        json={"duplicadoDe": ajeno["id"]}).status_code == 404

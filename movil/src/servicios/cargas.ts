@@ -133,3 +133,38 @@ export async function elegirCartola(): Promise<ArchivoElegido | null> {
   }
   return { nombre: a.name, base64, bytes: a.size ?? Math.round((base64.length * 3) / 4) };
 }
+
+// ───────────────────── correcciones sobre un movimiento (RF-14) ─────────────────────
+// Todas devuelven el movimiento como quedó: la app lo reemplaza tal cual, sin
+// adivinar qué cambió.
+
+const enc = encodeURIComponent;
+
+export function excluirMovimiento(id: string): Promise<Movimiento> {
+  return pedir<Movimiento>(`/api/movimientos/${enc(id)}/excluir`, { method: "POST" },
+    "No se pudo excluir el movimiento.");
+}
+
+export function marcarDuplicado(id: string, duplicadoDe: string): Promise<Movimiento> {
+  return pedir<Movimiento>(`/api/movimientos/${enc(id)}/duplicado`,
+    { method: "POST", body: JSON.stringify({ duplicadoDe }) },
+    "No se pudo marcar como duplicado.");
+}
+
+export function volverAContar(id: string): Promise<Movimiento> {
+  return pedir<Movimiento>(`/api/movimientos/${enc(id)}/exclusion`, { method: "DELETE" },
+    "No se pudo deshacer.");
+}
+
+/** `partes` con montos positivos, como los escribe la persona. */
+export function dividirMovimiento(id: string,
+                                  partes: { monto: number; categoria: string }[]): Promise<Movimiento> {
+  return pedir<Movimiento>(`/api/movimientos/${enc(id)}/division`,
+    { method: "PUT", body: JSON.stringify({ partes }) },
+    "No se pudo dividir el movimiento.");
+}
+
+export function unirMovimiento(id: string): Promise<Movimiento> {
+  return pedir<Movimiento>(`/api/movimientos/${enc(id)}/division`, { method: "DELETE" },
+    "No se pudo deshacer la división.");
+}

@@ -28,6 +28,7 @@
 import { useMemo } from "react";
 
 import type { Movimiento } from "@/modelo/tipos";
+import { expandirPartes } from "@/utils/porciones";
 import { colorOtros, paletaCategorias } from "@/constants/tema";
 import { useMovimientos } from "@/datos/MovimientosContexto";
 import { OTROS, SIN_CATEGORIA } from "@/utils/resumen";
@@ -55,7 +56,7 @@ function esNeutra(categoria: string): boolean {
  */
 export function construirPaleta(movimientos: Movimiento[]): PaletaDeCategorias {
   const totales = new Map<string, number>();
-  for (const m of movimientos) {
+  for (const m of expandirPartes(movimientos)) {
     if (m.monto >= 0 || m.excluido) continue;
     const clave = m.categoria ?? SIN_CATEGORIA;
     if (esNeutra(clave)) continue;

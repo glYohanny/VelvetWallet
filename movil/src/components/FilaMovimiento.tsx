@@ -29,7 +29,11 @@ export function FilaMovimiento({ movimiento: m, onPress, novedad, montoAnterior 
   // distinta de "sin categorizar" (eso lo resuelve el clasificador, aparte).
   const sinIdentificar = !m.comercio;
   const nombre = m.comercio ?? m.glosaOriginal;
-  const categoria = m.excluido ? "No es gasto" : (m.categoria ?? SIN_CATEGORIA);
+  const categoria = m.excluido
+    ? m.motivoExclusion === "duplicado" ? "Duplicado" : "No es gasto"
+    : m.partes?.length
+      ? m.partes.map((p) => p.categoria).join(" + ")
+      : (m.categoria ?? SIN_CATEGORIA);
   const subtitulo = `${categoria} · ${fechaLista(m.fecha)}`;
 
   // El color de la categoría, el mismo que usa el anillo. Un movimiento

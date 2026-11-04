@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import router as auth_router
 from .cargas import router as cargas_router
+from .correcciones import router as correcciones_router
 from .datos import router as datos_router
 from .conexiones import router as conexiones_router
 from .metas import router as metas_router
@@ -90,6 +91,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(datos_router)
 app.include_router(cargas_router)
+app.include_router(correcciones_router)
 app.include_router(conexiones_router)
 app.include_router(metas_router)
 app.include_router(perfil_router)

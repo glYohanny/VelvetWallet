@@ -51,6 +51,21 @@ _CATEGORIA_PROPIA = {
 }
 
 
+def _partes_vigentes(division: dict | None, monto) -> list[dict] | None:
+    """
+    Las partes de la última división, si sigue vigente. Si la persona la
+    deshizo, o si el banco cambió el monto después (una compra pendiente que
+    se confirmó por otro valor), las partes ya no suman y se dejan de aplicar:
+    un reparto que no cuadra con el total mostraría gastos que no existen.
+    """
+    if not division or division.get("deshacer") or not division.get("partes"):
+        return None
+    partes = division["partes"]
+    if round(sum(p["monto"] for p in partes)) != round(float(monto)):
+        return None
+    return [{"monto": float(p["monto"]), "categoria": p["categoria"]} for p in partes]
+
+
 def _movimiento(r: dict) -> dict:
     """Pasa una fila de la consulta a la forma que espera la app (camelCase)."""
     categoria_banco = r.get("categoria_origen")
@@ -79,6 +94,16 @@ def _movimiento(r: dict) -> dict:
     else:
         origen_clasificacion = None
 
+    excluido = r["estado"] == "excluido"
+    motivo_exclusion = duplicado_de = None
+    if excluido:
+        valor = r.get("exclusion_valor") or {}
+        if r.get("exclusion_tipo") == "marcar_duplicado":
+            motivo_exclusion, duplicado_de = "duplicado", valor.get("duplicado_de")
+        else:
+            motivo_exclusion = "no_es_gasto"
+    partes = _partes_vigentes(r.get("division"), r["monto"])
+
     return {
         "id": str(r["id"]),
         "cuentaId": r["cuenta_externa"],
@@ -95,7 +120,13 @@ def _movimiento(r: dict) -> dict:
         "origenClasificacion": origen_clasificacion,
         "confianza": confianza,
         "esRecurrente": r["es_recurrente"],
-        "excluido": r["estado"] == "excluido",
+        "excluido": excluido,
+        # Por qué no cuenta: la persona dijo que no es gasto (una transferencia
+        # entre cuentas propias, p. ej.) o que es un duplicado de otro (RF-14).
+        "motivoExclusion": motivo_exclusion,
+        "duplicadoDe": duplicado_de,
+        # Si lo dividió entre categorías: las partes, que suman el monto.
+        "partes": partes,
         # Por dónde entró primero, y todas las fuentes que lo trajeron: un
         # movimiento que llegó por la API y por una cartola es UNO (RF-09).
         "origen": r["fuente"],
@@ -120,7 +151,9 @@ _SELECT_MOVIMIENTOS = """
            cat.nombre          AS categoria,
            inst.nombre         AS institucion,
            inst.participante_sfa,
-           corr.corregida, corr.correcciones
+           corr.corregida, corr.correcciones,
+           exclusion.tipo AS exclusion_tipo, exclusion.valor AS exclusion_valor,
+           division.valor AS division
     FROM transaccion t
     JOIN cuenta c         ON c.id  = t.cuenta_id
     JOIN conexion cx      ON cx.id = c.conexion_id
@@ -132,7 +165,8 @@ _SELECT_MOVIMIENTOS = """
                    'tipo', co.tipo,
                    'fecha', to_char(co.created_at AT TIME ZONE 'UTC',
                                     'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
-                   'detalle', co.valor->>'categoria')
+                   'detalle', co.valor->>'categoria',
+                   'deshecha', COALESCE((co.valor->>'deshacer')::boolean, false))
                    ORDER BY co.created_at)
                -- Elegir la categoría al anotar un gasto a mano no es corregir
                -- nada: cuenta como decisión de la persona, pero no se lista.
@@ -140,6 +174,18 @@ _SELECT_MOVIMIENTOS = """
                AS correcciones
         FROM correccion co WHERE co.transaccion_id = t.id
     ) corr ON true
+    -- La capa de correcciones solo crece: el estado vigente es la última
+    -- corrección de cada clase (una que deshace a la anterior también cuenta).
+    LEFT JOIN LATERAL (
+        SELECT co.tipo, co.valor FROM correccion co
+        WHERE co.transaccion_id = t.id AND co.tipo IN ('excluir', 'marcar_duplicado')
+        ORDER BY co.created_at DESC LIMIT 1
+    ) exclusion ON true
+    LEFT JOIN LATERAL (
+        SELECT co.valor FROM correccion co
+        WHERE co.transaccion_id = t.id AND co.tipo = 'dividir'
+        ORDER BY co.created_at DESC LIMIT 1
+    ) division ON true
 """
 
 

@@ -108,6 +108,8 @@ Todo va filtrado por el usuario del token (JWT): cada usuario ve solo lo suyo.
 | `GET /api/conexiones`, `DELETE /api/conexiones/{id}` | Bancos vinculados; desvincular revoca el permiso y borra sus datos |
 | `GET/POST/PATCH/DELETE /api/metas` | Metas de ahorro, cada una con su proyección Monte Carlo |
 | `POST /api/cartolas` | Importa una cartola CSV (RF-12), a una cuenta existente o de un banco fuera del SFA; con `simular` es una vista previa |
+| `POST /api/movimientos/{id}/excluir`, `/duplicado`; `DELETE .../exclusion` | No es gasto, o es duplicado de otro (RF-14); volver a contarlo |
+| `PUT /api/movimientos/{id}/division`, `DELETE .../division` | Repartir un gasto entre categorías; las partes suman el monto exacto |
 | `POST /api/movimientos`, `DELETE /api/movimientos/{id}` | Anotar un gasto o ingreso en efectivo (RF-13); borrar solo lo anotado a mano |
 | `GET /api/privacidad/finalidades`, `POST .../{finalidad}` | Para qué se usan los datos; consentir y revocar por finalidad |
 
@@ -140,6 +142,21 @@ dice por dónde entró cada uno.
   ser la fuente principal (trae el `transactionID`) y la cartola queda como origen adicional.
 - **Efectivo**: lo anotado a mano va a una cuenta "Efectivo" de la persona. Si elige la
   categoría, es una decisión suya (queda como corrección); si no, la propone el clasificador.
+
+## Correcciones del usuario (RF-14)
+
+Recategorizar, excluir, marcar duplicado y dividir **no tocan el dato del banco**: monto, fecha,
+glosa y crudo quedan como llegaron. Cada corrección es una fila nueva en `correccion`, y deshacer
+también es una fila, así que la historia completa queda (`api/correcciones.py`).
+
+- **Excluir / duplicado** dejan `transaccion.estado = 'excluido'`, que es un derivado de esa capa y
+  lo que ya respetan el resumen, el flujo, las metas y las recurrencias. La sincronización no lo
+  toca: la corrección sobrevive. Un duplicado exige el mismo monto y que el otro sí cuente; el
+  original no se puede excluir mientras alguien sea duplicado de él (no quedaría ninguno).
+- **Dividir** guarda las partes en la corrección; el total sigue siendo el del movimiento y solo
+  cambia el reparto por categoría (en la app, `utils/porciones.ts`). Las partes tienen que sumar el
+  monto exacto. Si el banco cambia el monto después (pendiente → confirmada), el reparto deja de
+  aplicarse en vez de mostrar partes que ya no cuadran.
 
 ## Cifrado en reposo (RF-31)
 

@@ -43,6 +43,10 @@ ACCIONES = {
     "datos.importar":        "Importaste una cartola",
     "datos.registrar_manual": "Anotaste un movimiento a mano",
     "datos.borrar_manual":   "Borraste un movimiento que habías anotado",
+    "correccion.excluir":    "Marcaste un movimiento como que no es gasto",
+    "correccion.duplicado":  "Marcaste un movimiento como duplicado",
+    "correccion.dividir":    "Repartiste un gasto entre categorías",
+    "correccion.deshacer":   "Deshiciste una corrección",
 }
 
 

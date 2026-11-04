@@ -15,6 +15,7 @@
  */
 import type { Conexion, Movimiento } from "@/modelo/tipos";
 import { claveMes } from "@/utils/formato";
+import { expandirPartes } from "@/utils/porciones";
 
 export type ResumenMes = {
   mes: string;
@@ -157,7 +158,7 @@ function totalesPorCategoria(
 ): Map<string, number> {
   const incluye = typeof meses === "string" ? (m: string) => m === meses : (m: string) => meses.has(m);
   const totales = new Map<string, number>();
-  for (const m of movimientos) {
+  for (const m of expandirPartes(movimientos)) {
     if (m.monto >= 0 || m.excluido || !incluye(claveMes(m.fecha))) continue;
     const clave = m.categoria ?? SIN_CATEGORIA;
     totales.set(clave, (totales.get(clave) ?? 0) + Math.abs(m.monto));

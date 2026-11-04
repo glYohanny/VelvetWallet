@@ -22,6 +22,7 @@
  */
 import type { Movimiento } from "@/modelo/tipos";
 import { claveMes } from "@/utils/formato";
+import { expandirPartes } from "@/utils/porciones";
 import { OTROS, SIN_CATEGORIA } from "@/utils/resumen";
 
 /** Cuántas categorías muestra el gráfico antes de agrupar el resto en "Otros". */
@@ -61,7 +62,10 @@ function dentroDe(meses: string | Set<string>): (clave: string) => boolean {
 /** Cargos del período, sin los excluidos. Los abonos no son gasto. */
 function cargos(movimientos: Movimiento[], meses: string | Set<string>): Movimiento[] {
   const incluye = dentroDe(meses);
-  return movimientos.filter((m) => m.monto < 0 && !m.excluido && incluye(claveMes(m.fecha)));
+  // Un gasto dividido cuenta como sus partes, cada una en su categoría.
+  return expandirPartes(
+    movimientos.filter((m) => m.monto < 0 && !m.excluido && incluye(claveMes(m.fecha))),
+  );
 }
 
 /** La categoría con que se muestra un movimiento. */
