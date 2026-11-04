@@ -22,7 +22,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from . import bitacora, db
+from ingesta import config as config_ingesta
 from ingesta.cifrado import ctx_sueldo, descifrar_numero
+from ingesta import conexiones_bd
 from .sesion_actual import usuario_actual
 
 router = APIRouter(prefix="/api/privacidad", tags=["Privacidad"])
@@ -370,8 +372,17 @@ def suprimir(datos: Supresion, peticion: Request, usuario_id: str = Depends(usua
         # Se anota ANTES de borrar: después el usuario_id ya no existiría.
         bitacora.registrar(conn, usuario_id, "cuenta.suprimir", fila["email"],
                            bitacora.ip_de(peticion))
+        conexiones = [str(r["id"]) for r in conn.execute(
+            "SELECT id FROM conexion WHERE usuario_id = %s", (usuario_id,)).fetchall()]
         conn.execute("DELETE FROM usuario WHERE id = %s", (usuario_id,))
         conn.commit()
+
+    # Los crudos de Mongo (lo que mandó cada banco, las cartolas, lo anotado a
+    # mano) no cuelgan de la FK de Postgres: se borran aparte. Después del
+    # commit, para no borrarlos si la supresión no llegó a confirmarse.
+    if conexiones:
+        conexiones_bd.mongo()[config_ingesta.MONGO_DB].payload_crudo.delete_many(
+            {"conexion_id": {"$in": conexiones}})
 
     return {"eliminada": True}
 
