@@ -37,6 +37,7 @@ from .sesion_actual import usuario_actual
 
 # La ingesta vive en backend/ingesta; se corre desde backend/, así que es importable.
 from ingesta.cifrado import descifrar_alcance
+from ingesta.importacion import ID_EFECTIVO
 from ingesta.cliente_sfa import AutorizacionFallida, ClienteSFA, ReautorizacionRequerida
 from ingesta.normalizador import etiqueta_tipo_cuenta
 from ingesta.repositorio import Repositorio
@@ -242,7 +243,9 @@ def listar_conexiones(usuario_id: str = Depends(usuario_actual)):
         filas = conn.execute(
             """
             SELECT cx.id, cx.estado, cx.ultima_sincronizacion,
-                   inst.nombre AS institucion,
+                   inst.nombre AS institucion, inst.participante_sfa,
+                   (SELECT max(t.fecha) FROM transaccion t JOIN cuenta c3 ON c3.id = t.cuenta_id
+                    WHERE c3.conexion_id = cx.id) AS datos_hasta,
                    cs.alcance_rar      AS alcance,
                    cs.fecha_expiracion AS expira
             FROM conexion cx
@@ -279,7 +282,8 @@ def listar_conexiones(usuario_id: str = Depends(usuario_actual)):
             "id": str(c["id"]),
             # El id del banco: es el que traen los movimientos (RF-05).
             "idExterno": c["id_externo"],
-            "tipo": etiqueta_tipo_cuenta(c["tipo"]),
+            "tipo": ("Efectivo" if c["id_externo"] == ID_EFECTIVO
+                     else etiqueta_tipo_cuenta(c["tipo"])),
             "numeroEnmascarado": c["numero_enmascarado"],
             "moneda": c["moneda"],
             "saldo": float(c["saldo"]) if c["saldo"] is not None else None,
@@ -288,15 +292,37 @@ def listar_conexiones(usuario_id: str = Depends(usuario_actual)):
     ahora = datetime.now(timezone.utc)
     conexiones = []
     for r in filas:
+        ultima = r["ultima_sincronizacion"]
+        cuentas_cx = por_conexion.get(str(r["id"]), [])
+        if not r["participante_sfa"]:
+            # Cartola o efectivo: no hay permiso que renovar ni banco al que
+            # preguntar. El dato llega hasta donde llegó lo importado, y eso
+            # es lo que se informa (RF-35).
+            conexiones.append({
+                "id": str(r["id"]),
+                "institucion": r["institucion"],
+                "fuente": ("manual" if any(c["idExterno"] == ID_EFECTIVO for c in cuentas_cx)
+                           else "cartola"),
+                "estado": "al_dia",
+                "cuentas": cuentas_cx,
+                "ultimaSincronizacion": ultima.isoformat() if ultima else None,
+                "datosHasta": r["datos_hasta"].isoformat() if r["datos_hasta"] else None,
+                "datoAntiguo": False,
+                "rutCliente": None,
+                "nombreCliente": None,
+                "autorizada": False,
+            })
+            continue
         alcance = descifrar_alcance(r["alcance"], r["id"]) or {}
         autorizada = bool(alcance.get("refreshToken"))
         estado = _estado_visible(r["estado"], autorizada, r["expira"], ahora)
-        ultima = r["ultima_sincronizacion"]
         conexiones.append({
+            "fuente": "sfa",
+            "datosHasta": r["datos_hasta"].isoformat() if r["datos_hasta"] else None,
             "id": str(r["id"]),
             "institucion": r["institucion"],
             "estado": estado,
-            "cuentas": por_conexion.get(str(r["id"]), []),
+            "cuentas": cuentas_cx,
             "ultimaSincronizacion": ultima.isoformat() if ultima else None,
             "autorizacionVencioEl": r["expira"].isoformat()
             if estado == "autorizacion_vencida" and r["expira"] else None,

@@ -22,6 +22,7 @@ DDL = Path(__file__).resolve().parent.parent / "BD" / "db" / "postgres" / "init"
 TABLAS = [
     "bitacora_auditoria",
     "correccion",
+    "transaccion_origen",
     "transaccion",
     "meta",
     "suscripcion",

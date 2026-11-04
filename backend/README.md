@@ -107,6 +107,8 @@ Todo va filtrado por el usuario del token (JWT): cada usuario ve solo lo suyo.
 | `POST /api/conexiones` | Trae (o re-trae) los datos con el permiso guardado |
 | `GET /api/conexiones`, `DELETE /api/conexiones/{id}` | Bancos vinculados; desvincular revoca el permiso y borra sus datos |
 | `GET/POST/PATCH/DELETE /api/metas` | Metas de ahorro, cada una con su proyección Monte Carlo |
+| `POST /api/cartolas` | Importa una cartola CSV (RF-12), a una cuenta existente o de un banco fuera del SFA; con `simular` es una vista previa |
+| `POST /api/movimientos`, `DELETE /api/movimientos/{id}` | Anotar un gasto o ingreso en efectivo (RF-13); borrar solo lo anotado a mano |
 | `GET /api/privacidad/finalidades`, `POST .../{finalidad}` | Para qué se usan los datos; consentir y revocar por finalidad |
 
 **La clave del banco nunca pasa por Velvet**: el usuario la escribe en la página del banco
@@ -116,6 +118,28 @@ token del permiso, cifrado (ver abajo).
 Si la base se creó con un esquema anterior (sin `transaccion.categoria_origen`, o con
 `usuario.sueldo_declarado` numérico), el backend la pone al día solo la primera vez que se conecta
 (`ingesta/esquema.py`, idempotente).
+
+## Tres fuentes, un solo ledger (OE-1)
+
+Los movimientos entran por la API del SFA, por cartola CSV o anotados a mano, y terminan en el
+mismo modelo canónico: mismo clasificador, mismas recurrencias, mismos cálculos. `transaccion.fuente`
+dice por dónde entró cada uno.
+
+- **Cartolas** (`ingesta/cartola.py`): detecta el separador, salta los títulos hasta el
+  encabezado y entiende montos a la chilena (`$ 12.345`, cargos y abonos en columnas aparte),
+  fechas `dd/mm/aaaa` y archivos de Excel en Windows-1252. Una línea que no se puede leer se
+  informa con su número y el motivo, y el resto entra igual.
+- **Misma fuente, misma fila**: la huella `hash_dedup`. Reimportar la misma cartola, o una que se
+  solapa con la anterior, no duplica nada.
+- **Otra fuente, mismo movimiento** (RF-09, `ingesta/dedup.py`): la misma compra llega con otra
+  glosa ("Jumbo" / "COMPRA JUMBO LA FLORIDA") y a veces con la fecha contable, uno o dos días
+  después. Se considera la misma cuando el monto es idéntico y las fechas están a ≤ 3 días; entre
+  candidatos gana la fecha más cercana y después la glosa más parecida, uno a uno. Queda **un**
+  movimiento, y la otra fuente se anota en `transaccion_origen` con su propio crudo. Funciona en
+  los dos sentidos: si el historial entró por cartola y después la API trae lo mismo, la API pasa a
+  ser la fuente principal (trae el `transactionID`) y la cartola queda como origen adicional.
+- **Efectivo**: lo anotado a mano va a una cuenta "Efectivo" de la persona. Si elige la
+  categoría, es una decisión suya (queda como corrección); si no, la propone el clasificador.
 
 ## Cifrado en reposo (RF-31)
 

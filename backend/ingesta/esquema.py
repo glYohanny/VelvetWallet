@@ -26,6 +26,22 @@ def asegurar(conn) -> None:
         # Columna agregada después del esquema inicial.
         conn.execute("ALTER TABLE transaccion ADD COLUMN IF NOT EXISTS categoria_origen varchar(80)")
 
+        # RF-09 / RF-12 / RF-13: por dónde entró cada movimiento, y las otras
+        # fuentes que trajeron el mismo.
+        conn.execute("ALTER TABLE transaccion ADD COLUMN IF NOT EXISTS fuente varchar(20) "
+                     "NOT NULL DEFAULT 'sfa' CHECK (fuente IN ('sfa','cartola','manual'))")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS transaccion_origen (
+                id                uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+                transaccion_id    uuid         NOT NULL REFERENCES transaccion(id) ON DELETE CASCADE,
+                fuente            varchar(20)  NOT NULL CHECK (fuente IN ('sfa','cartola','manual')),
+                payload_crudo_ref varchar(24),
+                hash_dedup        varchar(64)  NOT NULL UNIQUE,
+                recibido_at       timestamptz  NOT NULL DEFAULT now()
+            )""")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_transaccion_origen_tx "
+                     "ON transaccion_origen (transaccion_id)")
+
         # RF-31: el sueldo declarado se guarda cifrado, que es texto y no un
         # número. El CHECK (>= 0) se va con el cambio de tipo: la validación
         # del monto ya la hace la API antes de cifrar (api/perfil.py).

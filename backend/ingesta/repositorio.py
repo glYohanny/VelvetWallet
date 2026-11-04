@@ -26,6 +26,7 @@ from psycopg.types.json import Json
 from . import config, esquema
 from .cifrado import (cifrar, cifrar_alcance, ctx_payload, descifrar,
                       descifrar_alcance)
+from .bootstrap import asegurar_conexion
 from .conexiones_bd import mongo, pool
 
 # Columnas de transaccion que escribe la ingesta, en orden fijo.
@@ -417,6 +418,139 @@ class Repositorio:
             {"uid": usuario_id, "vistas": vistas},
         )
         return len(vistas)
+
+    # ── Fuentes fuera del SFA: cartolas y carga manual (RF-09/12/13) ───────
+    def insertar_sin_id(self, cuenta_id: str, fuente: str, filas: list[dict]) -> list[str]:
+        """
+        Inserta movimientos que no traen identificador de la institución
+        (cartola o carga manual). La huella `hash_dedup` es la que evita
+        duplicarlos: reimportar la misma cartola no inserta nada. Devuelve los
+        ids insertados, en orden.
+
+        `filas`: dicts con hash_dedup, payload_crudo_ref, monto, fecha,
+        glosa_original y opcionalmente categoria_nombre y confianza_clasificacion.
+        """
+        ids = []
+        for f in filas:
+            fila = self.conn.execute(
+                """INSERT INTO transaccion (cuenta_id, payload_crudo_ref, monto, moneda, fecha,
+                                            glosa_original, categoria_id,
+                                            confianza_clasificacion, hash_dedup, estado, fuente)
+                   VALUES (%s, %s, %s, 'CLP', %s, %s, %s, %s, %s, 'confirmado', %s)
+                   ON CONFLICT (hash_dedup) DO NOTHING
+                   RETURNING id""",
+                (cuenta_id, f.get("payload_crudo_ref"), f["monto"], f["fecha"],
+                 f["glosa_original"], self.categoria_id(f.get("categoria_nombre")),
+                 f.get("confianza_clasificacion"), f["hash_dedup"], fuente),
+            ).fetchone()
+            if fila:
+                ids.append(str(fila[0]))
+        return ids
+
+    def registrar_origen(self, transaccion_id: str, fuente: str, payload_ref: str | None,
+                         hash_fuente: str) -> None:
+        """Otra fuente trajo un movimiento que ya estaba: se anota, no se duplica."""
+        self.conn.execute(
+            """INSERT INTO transaccion_origen (transaccion_id, fuente, payload_crudo_ref, hash_dedup)
+               VALUES (%s, %s, %s, %s) ON CONFLICT (hash_dedup) DO NOTHING""",
+            (transaccion_id, fuente, payload_ref, hash_fuente),
+        )
+
+    def hashes_conocidos(self, hashes: list[str]) -> set[str]:
+        """De estas huellas, cuáles ya entraron (como movimiento o como origen adicional)."""
+        if not hashes:
+            return set()
+        filas = self.conn.execute(
+            """SELECT hash_dedup FROM transaccion WHERE hash_dedup = ANY(%s)
+               UNION SELECT hash_dedup FROM transaccion_origen WHERE hash_dedup = ANY(%s)""",
+            (hashes, hashes),
+        ).fetchall()
+        return {f[0] for f in filas}
+
+    def candidatos_a_fusion(self, cuenta_id: str, fuente_entrante: str,
+                            desde, hasta) -> list[tuple]:
+        """
+        Movimientos de la cuenta que podrían ser el mismo que uno que llega por
+        `fuente_entrante`: los de OTRA fuente, en el rango de fechas, y que esa
+        fuente todavía no haya reportado. (id, fecha, monto, glosa).
+        """
+        return self.conn.execute(
+            """SELECT t.id::text, t.fecha, t.monto, COALESCE(t.glosa_original, '')
+               FROM transaccion t
+               WHERE t.cuenta_id = %(cuenta)s AND t.fuente <> %(fuente)s
+                 AND t.fecha BETWEEN %(desde)s AND %(hasta)s
+                 AND NOT EXISTS (SELECT 1 FROM transaccion_origen o
+                                 WHERE o.transaccion_id = t.id AND o.fuente = %(fuente)s)""",
+            {"cuenta": cuenta_id, "fuente": fuente_entrante, "desde": desde, "hasta": hasta},
+        ).fetchall()
+
+    def adoptar_desde_sfa(self, transaccion_id: str, d: dict, payload_ref: str) -> None:
+        """
+        La API del banco trajo un movimiento que ya había entrado por cartola.
+        La API pasa a ser la fuente principal —trae el transactionID, que es
+        lo que permite seguir la transición pendiente→confirmada— y la cartola
+        queda como origen adicional, con su crudo. La categoría que tenía se
+        conserva: puede haberla corregido la persona.
+        """
+        self.conn.execute(
+            """INSERT INTO transaccion_origen (transaccion_id, fuente, payload_crudo_ref, hash_dedup)
+               SELECT id, fuente, payload_crudo_ref, hash_dedup FROM transaccion WHERE id = %s
+               ON CONFLICT (hash_dedup) DO NOTHING""",
+            (transaccion_id,),
+        )
+        self.conn.execute(
+            """UPDATE transaccion
+               SET id_externo = %s, hash_dedup = %s, payload_crudo_ref = %s, monto = %s,
+                   fecha = %s, glosa_original = %s, categoria_origen = %s, fuente = 'sfa'
+               WHERE id = %s""",
+            (d["id_externo"], d["hash_dedup"], payload_ref, d["monto"], d["fecha"],
+             d["glosa_original"], d["categoria_origen"], transaccion_id),
+        )
+
+    def cuenta_del_usuario(self, usuario_id: str, cuenta_id: str) -> dict | None:
+        fila = self.conn.execute(
+            """SELECT c.id, c.conexion_id, c.id_externo, inst.nombre, inst.participante_sfa
+               FROM cuenta c
+               JOIN conexion cx      ON cx.id = c.conexion_id
+               JOIN institucion inst ON inst.id = cx.institucion_id
+               WHERE c.id::text = %s AND c.usuario_id = %s""",
+            (cuenta_id, usuario_id),
+        ).fetchone()
+        if fila is None:
+            return None
+        return {"id": str(fila[0]), "conexion_id": str(fila[1]), "id_externo": fila[2],
+                "institucion": fila[3], "participante_sfa": fila[4]}
+
+    def institucion_por_nombre(self, nombre: str) -> tuple | None:
+        """(id, nombre, participante_sfa) sin distinguir mayúsculas."""
+        return self.conn.execute(
+            "SELECT id, nombre, participante_sfa FROM institucion WHERE lower(nombre) = lower(%s)",
+            (nombre,),
+        ).fetchone()
+
+    def cuenta_fuera_del_sfa(self, usuario_id: str, institucion: str, id_externo: str,
+                             tipo_institucion: str, tipo_cuenta: str) -> dict:
+        """
+        Get-or-create de la cuenta de una institución que no está en el SFA (un
+        banco del que solo hay cartolas, o el efectivo). Cuelga de una conexión
+        como cualquier otra cuenta, así que los resúmenes, el borrado de la
+        cuenta y la desvinculación la tratan igual.
+        """
+        inst = self.institucion_por_nombre(institucion)
+        if inst is None:
+            inst_id = self.conn.execute(
+                """INSERT INTO institucion (nombre, tipo, participante_sfa)
+                   VALUES (%s, %s, false) RETURNING id""",
+                (institucion, tipo_institucion),
+            ).fetchone()[0]
+            nombre = institucion
+        else:
+            inst_id, nombre = inst[0], inst[1]
+        conexion_id = asegurar_conexion(self.conn, usuario_id, inst_id)
+        cuenta_id = self.upsert_cuenta(conexion_id, usuario_id, {
+            "id_externo": id_externo, "tipo": tipo_cuenta, "moneda": "CLP", "saldo": None})
+        return {"id": str(cuenta_id), "conexion_id": str(conexion_id),
+                "id_externo": id_externo, "institucion": nombre, "participante_sfa": False}
 
     def marcar_sincronizacion(self, conexion_id: str):
         self.conn.execute(

@@ -233,6 +233,8 @@ CREATE TABLE transaccion (
     hash_dedup              varchar(64)   NOT NULL UNIQUE,
     confianza_clasificacion numeric(5,4)           CHECK (confianza_clasificacion BETWEEN 0 AND 1),
     es_recurrente           boolean       NOT NULL DEFAULT false,
+    fuente                  varchar(20)   NOT NULL DEFAULT 'sfa'
+                                          CHECK (fuente IN ('sfa','cartola','manual')),
     created_at              timestamptz   NOT NULL DEFAULT now()
 );
 
@@ -244,7 +246,29 @@ COMMENT ON COLUMN transaccion.confianza_clasificacion IS 'Confianza [0..1] del c
 COMMENT ON COLUMN transaccion.glosa_normalizada       IS 'Glosa limpia (p. ej. "UBER *EATS 8829" → "Uber Eats") (RF-10).';
 COMMENT ON COLUMN transaccion.categoria_origen        IS 'Categoría tal como la manda la institución (merchantDetails.category del estándar). Es OPCIONAL y cada proveedor usa su propia taxonomía, sin equivalencia común: por eso se guarda aparte de categoria_id en vez de mezclarse con ella. Entra como señal del clasificador, que además de clasificar debe normalizar taxonomías distintas entre instituciones.';
 COMMENT ON COLUMN transaccion.id_externo              IS 'transactionID tal como lo entrega la institución. Clave de actualización (upsert) para fuentes SFA. NULL en carga manual.';
+COMMENT ON COLUMN transaccion.fuente                  IS 'Por qué camino entró primero: API del SFA, cartola CSV (RF-12) o carga manual (RF-13). Si otra fuente trae el mismo movimiento, queda en transaccion_origen (RF-09).';
 COMMENT ON COLUMN transaccion.monto                   IS 'Con signo: negativo = cargo, positivo = abono. No existe movimiento de monto cero. El dato original queda en payload_crudo (Mongo).';
+
+-- =============================================================================
+-- 9b. TRANSACCION_ORIGEN  (las otras fuentes que trajeron el mismo movimiento)
+-- =============================================================================
+-- RF-09: un movimiento que llega por dos caminos (la API del banco y una
+-- cartola del mismo período) es UNO solo en el ledger, pero no se pierde que
+-- llegó dos veces. La fuente principal queda en transaccion (fuente,
+-- payload_crudo_ref); cada fuente adicional, aquí, con su propio crudo.
+--
+-- hash_dedup único: es la huella de la fila en SU fuente. Reimportar la misma
+-- cartola la reconoce y no vuelve a fusionarla.
+CREATE TABLE transaccion_origen (
+    id                uuid         PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaccion_id    uuid         NOT NULL REFERENCES transaccion(id) ON DELETE CASCADE,
+    fuente            varchar(20)  NOT NULL CHECK (fuente IN ('sfa','cartola','manual')),
+    payload_crudo_ref varchar(24),
+    hash_dedup        varchar(64)  NOT NULL UNIQUE,
+    recibido_at       timestamptz  NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE transaccion_origen IS 'Fuentes adicionales de un mismo movimiento, deduplicado entre fuentes (RF-09).';
 
 -- =============================================================================
 -- 10. CORRECCION  (capa de correcciones del usuario, no sobrescribe el origen)
@@ -393,6 +417,7 @@ CREATE UNIQUE INDEX uq_transaccion_cuenta_externo ON transaccion (cuenta_id, id_
 -- Bandeja "Por revisar": movimientos sin categoría (RF-18).
 CREATE INDEX idx_transaccion_sin_categoria ON transaccion (cuenta_id) WHERE categoria_id IS NULL;
 
+CREATE INDEX idx_transaccion_origen_tx   ON transaccion_origen (transaccion_id);
 CREATE INDEX idx_correccion_transaccion  ON correccion (transaccion_id);
 CREATE INDEX idx_correccion_usuario      ON correccion (usuario_id);
 CREATE INDEX idx_bitacora_usuario        ON bitacora_auditoria (usuario_id);

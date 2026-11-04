@@ -15,6 +15,17 @@ import { fechaCorta, pesos, tiempoRelativo } from "@/utils/formato";
 
 /** Traduce el estado a lo que ve el usuario. Único lugar donde se decide. */
 function describirEstado(c: Conexion): { color: string; texto: string } {
+  // Sin banco al que preguntar: el dato llega hasta donde llegó lo importado
+  // o lo anotado, y eso es lo que hay que decir (RF-35).
+  if (c.fuente === "cartola") {
+    return {
+      color: colores.texto3,
+      texto: c.datosHasta ? `Cartola · datos hasta el ${fechaCorta(c.datosHasta)}` : "Cartola",
+    };
+  }
+  if (c.fuente === "manual") {
+    return { color: colores.texto3, texto: "Anotado a mano" };
+  }
   switch (c.estado) {
     case "autorizacion_vencida":
       return {

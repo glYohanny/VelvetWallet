@@ -419,3 +419,195 @@ class TestCifradoEnReposo:
             assert repo.leer_crudo(str(viejo)) == {"transactionID": "TX-VIEJO"}
         finally:
             repo.close()
+
+
+# ──────────── las otras fuentes: cartola CSV y carga manual (OE-1) ────────────
+
+def _b64(texto: str) -> str:
+    import base64
+    return base64.b64encode(texto.encode("utf-8")).decode()
+
+
+def _cartola(filas: list[tuple[str, str, int]]) -> str:
+    """Cartola al estilo de un banco chileno: título, `;`, cargos y abonos aparte."""
+    lineas = ["Cartola de Cuenta Corriente;;;", ";;;", "Fecha;Descripción;Cargos;Abonos"]
+    for fecha, glosa, monto in filas:
+        cargo, abono = (f"$ {-monto:,}".replace(",", "."), "") if monto < 0 else \
+                       ("", f"$ {monto:,}".replace(",", "."))
+        lineas.append(f"{fecha};{glosa};{cargo};{abono}")
+    return "\n".join(lineas) + "\n"
+
+
+class TestCartolasYCargaManual:
+    @pytest.fixture
+    def usuario(self, api, efs, base_limpia):
+        x = registrar(api, "Usuario X", "x@prueba.cl")
+        _, r = vincular(api, efs, x, *CAMILA)
+        assert r is not None and r.status_code == 200
+        return x
+
+    def _importar(self, api, cabeceras, csv, **destino):
+        return api.post("/api/cartolas", headers=cabeceras,
+                        json={"contenidoBase64": _b64(csv), "nombreArchivo": "cartola.csv",
+                              **destino})
+
+    def test_banco_fuera_del_sfa_con_vista_previa(self, api, usuario):
+        csv = _cartola([("01/10/2026", "COMPRA JUMBO LA FLORIDA", -45990),
+                        ("02/10/2026", "TRANSFERENCIA DE JUAN PEREZ", 120000),
+                        ("03/10/2026", "COMPRA JUMBO LA FLORIDA", -45990),
+                        ("35/10/2026", "LINEA ROTA", -1000)])
+        antes = len(movimientos(api, usuario))
+
+        vista = self._importar(api, usuario, csv, institucion="Banco Estado", simular=True)
+        assert vista.status_code == 200, vista.text
+        v = vista.json()
+        assert (v["simulado"], v["leidas"], v["nuevas"]) == (True, 3, 3)
+        assert v["rechazadas"] == [{"linea": 7, "motivo": "fecha no reconocida: '35/10/2026'"}]
+        assert len(movimientos(api, usuario)) == antes       # la vista previa no guarda nada
+
+        r = self._importar(api, usuario, csv, institucion="Banco Estado").json()
+        assert (r["nuevas"], r["fusionadas"], r["repetidas"]) == (3, 0, 0)
+        de_cartola = [m for m in movimientos(api, usuario) if m["origen"] == "cartola"]
+        assert len(de_cartola) == 3 and {m["institucion"] for m in de_cartola} == {"Banco Estado"}
+        jumbo = next(m for m in de_cartola if m["monto"] == -45990)
+        assert jumbo["categoria"] == "Supermercado"       # mismo clasificador que la API
+        assert jumbo["payloadCrudoRef"]                   # y su crudo guardado (RF-06)
+
+        # Reimportar la misma cartola no duplica nada, ni los dos Jumbo iguales.
+        otra = self._importar(api, usuario, csv, institucion="banco estado").json()
+        assert (otra["nuevas"], otra["repetidas"]) == (0, 3)
+        assert len(movimientos(api, usuario)) == antes + 3
+
+        # En Cuentas aparece como cartola: sin "Reautorizar", con hasta dónde llega el dato.
+        cx = next(c for c in api.get("/api/conexiones", headers=usuario).json()["conexiones"]
+                  if c["institucion"] == "Banco Estado")
+        assert (cx["fuente"], cx["estado"], cx["datosHasta"]) == ("cartola", "al_dia",
+                                                                 "2026-10-03")
+
+    def test_historial_de_un_banco_conectado_se_fusiona_con_la_api(self, api, usuario):
+        todos = movimientos(api, usuario)
+        cuenta = api.get("/api/cuentas", headers=usuario).json()["cuentas"][0]
+        de_la_cuenta = [m for m in todos if m["cuentaId"] == cuenta["idExterno"]][:3]
+        from datetime import date, timedelta
+
+        def un_dia_despues(m):   # la fecha contable de la cartola
+            return (date.fromisoformat(m["fecha"][:10]) + timedelta(days=1)).strftime("%d/%m/%Y")
+
+        filas = [(un_dia_despues(m), "COMPRA " + (m["comercio"] or "X").upper(), int(m["monto"]))
+                 for m in de_la_cuenta]
+        filas.append(("15/01/2020", "COMPRA ANTIGUA", -7000))   # anterior a la conexión
+        r = self._importar(api, usuario, _cartola(filas), cuentaId=cuenta["id"]).json()
+        assert (r["nuevas"], r["fusionadas"]) == (1, 3)
+
+        despues = movimientos(api, usuario)
+        assert len(despues) == len(todos) + 1                 # solo la antigua es nueva
+        for m in de_la_cuenta:
+            fusionado = next(x for x in despues if x["id"] == m["id"])
+            assert fusionado["fuentes"] == ["sfa", "cartola"]   # RF-09: ambos orígenes
+        # Re-sincronizar con el banco no las vuelve a duplicar.
+        assert api.post("/api/conexiones", json={}, headers=usuario).status_code == 200
+        assert len(movimientos(api, usuario)) == len(despues)
+
+    def test_la_api_adopta_lo_que_entro_antes_por_cartola(self, api, usuario, url_base):
+        import psycopg
+
+        todos = movimientos(api, usuario)
+        cuenta = api.get("/api/cuentas", headers=usuario).json()["cuentas"][0]
+        m = next(x for x in todos if x["cuentaId"] == cuenta["idExterno"] and x["monto"] < 0)
+        # Como si ese movimiento solo hubiera llegado por cartola (historial
+        # importado antes de que la API lo trajera).
+        with psycopg.connect(url_base) as conn:
+            conn.execute("DELETE FROM transaccion WHERE id = %s", (m["id"],))
+        fecha = m["fecha"][8:10] + "/" + m["fecha"][5:7] + "/" + m["fecha"][:4]
+        r = self._importar(api, usuario, _cartola([(fecha, "CARGO EN CUENTA", int(m["monto"]))]),
+                           cuentaId=cuenta["id"]).json()
+        assert r["nuevas"] == 1
+
+        assert api.post("/api/conexiones", json={}, headers=usuario).status_code == 200
+        despues = movimientos(api, usuario)
+        assert len(despues) == len(todos)                     # no quedó duplicado
+        adoptado = next(x for x in despues if x["monto"] == m["monto"]
+                        and x["fecha"] == m["fecha"] and x["origen"] == "sfa"
+                        and "cartola" in x["fuentes"])
+        assert adoptado["glosaOriginal"] == m["glosaOriginal"]   # manda el dato de la API
+
+    def test_errores_que_ve_la_persona(self, api, usuario):
+        assert self._importar(api, usuario, "a;b\n1;2\n",
+                              institucion="Banco X").status_code == 422
+        r = self._importar(api, usuario, _cartola([("01/10/2026", "X", -1)]),
+                           institucion="Banco Simulado SFA")
+        assert r.status_code == 422 and "elige su cuenta" in r.json()["detail"]
+        r = self._importar(api, usuario, _cartola([("01/10/2026", "X", -1)]),
+                           cuentaId="00000000-0000-0000-0000-000000000000")
+        assert r.status_code == 422
+        r = api.post("/api/cartolas", headers=usuario,
+                     json={"contenidoBase64": "no es base64!", "institucion": "Banco X"})
+        assert r.status_code == 422
+
+    def test_la_cuenta_de_otro_no_sirve_de_destino(self, api, efs, usuario):
+        otro = registrar(api, "Usuario Y", "y@prueba.cl")
+        vincular(api, efs, otro, *DIEGO)
+        ajena = api.get("/api/cuentas", headers=otro).json()["cuentas"][0]["id"]
+        r = self._importar(api, usuario, _cartola([("01/10/2026", "X", -1000)]), cuentaId=ajena)
+        assert r.status_code == 422
+        assert all(m["origen"] != "cartola" for m in movimientos(api, otro))
+
+    def test_gasto_en_efectivo(self, api, usuario):
+        r = api.post("/api/movimientos", headers=usuario,
+                     json={"monto": 3500, "glosa": "Almuerzo en la feria",
+                           "fecha": "2026-10-20", "categoria": "Restaurantes"})
+        assert r.status_code == 201, r.text
+        m = r.json()
+        assert (m["monto"], m["origen"], m["categoria"], m["institucion"]) == (
+            -3500, "manual", "Restaurantes", "Efectivo")
+        assert m["origenClasificacion"] == "usuario"           # lo decidió la persona
+        assert m["correcciones"] == []        # pero elegirla al anotar no es una corrección
+        assert any(x["id"] == m["id"] for x in movimientos(api, usuario))
+
+        cx = next(c for c in api.get("/api/conexiones", headers=usuario).json()["conexiones"]
+                  if c["institucion"] == "Efectivo")
+        assert cx["fuente"] == "manual" and cx["cuentas"][0]["tipo"] == "Efectivo"
+
+        # Sin categoría, la propone el clasificador.
+        sin = api.post("/api/movimientos", headers=usuario,
+                       json={"monto": 12000, "glosa": "Jumbo"}).json()
+        assert sin["categoria"] == "Supermercado" and sin["origenClasificacion"] == "regla"
+
+        ingreso = api.post("/api/movimientos", headers=usuario,
+                           json={"monto": 20000, "tipo": "ingreso", "glosa": "Venta bicicleta"})
+        assert ingreso.json()["monto"] == 20000
+
+        assert api.delete(f"/api/movimientos/{m['id']}", headers=usuario).status_code == 204
+        assert all(x["id"] != m["id"] for x in movimientos(api, usuario))
+
+    def test_validaciones_del_gasto_manual(self, api, usuario):
+        def anotar(**campos):
+            return api.post("/api/movimientos", headers=usuario,
+                            json={"monto": 1000, "glosa": "x", **campos}).status_code
+        assert anotar(fecha="2099-01-01") == 422
+        assert anotar(monto=0) == 422
+        assert anotar(monto=-5) == 422
+        assert anotar(glosa="   ") == 422
+        assert anotar(categoria="Inventada") == 422
+        assert anotar(monto=10**12) == 422
+
+    def test_no_se_borra_lo_que_mando_un_banco(self, api, usuario):
+        del_banco = movimientos(api, usuario)[0]["id"]
+        assert api.delete(f"/api/movimientos/{del_banco}", headers=usuario).status_code == 404
+
+    def test_borrar_la_cuenta_se_lleva_tambien_los_crudos(self, api, usuario):
+        from ingesta import config
+        from ingesta.conexiones_bd import mongo
+
+        self._importar(api, usuario, _cartola([("01/10/2026", "COMPRA X", -1000)]),
+                       institucion="Banco Estado")
+        api.post("/api/movimientos", headers=usuario, json={"monto": 1000, "glosa": "Café"})
+        crudos = mongo()[config.MONGO_DB].payload_crudo
+        suyas = {"conexion_id": {"$in": [
+            c["id"] for c in api.get("/api/conexiones", headers=usuario).json()["conexiones"]]}}
+        # Del banco, de la cartola y del efectivo: tres conexiones con crudo.
+        assert len(crudos.distinct("conexion_id", suyas)) == 3
+        r = api.request("DELETE", "/api/privacidad/cuenta",
+                        json={"confirmacion": "x@prueba.cl"}, headers=usuario)
+        assert r.status_code == 200
+        assert crudos.count_documents(suyas) == 0

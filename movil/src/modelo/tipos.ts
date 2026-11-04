@@ -58,6 +58,14 @@ export type EstadoConexion =
 export type Conexion = {
   id: string;
   institucion: string;
+  /**
+   * Cómo llegan sus datos: por la API del SFA, por cartolas que importa la
+   * persona, o anotados a mano (efectivo). Solo las del SFA tienen un permiso
+   * que vence y que hay que reautorizar.
+   */
+  fuente?: OrigenMovimiento;
+  /** Fecha del movimiento más reciente. En una cartola, hasta dónde llega el dato. */
+  datosHasta?: string | null;
   estado: EstadoConexion;
   /** Última vez que se obtuvieron datos con éxito. null si nunca se sincronizó. */
   ultimaSincronizacion: string | null;
@@ -153,12 +161,18 @@ export type Movimiento = {
   esRecurrente: boolean;
   /** No es gasto: transferencia entre cuentas propias, por ejemplo. */
   excluido: boolean;
+  /** Por dónde entró primero. */
   origen: OrigenMovimiento;
+  /**
+   * Todas las fuentes que lo trajeron, empezando por `origen`. Un movimiento
+   * que llegó por la API y por una cartola es UNO solo, con las dos (RF-09).
+   */
+  fuentes?: OrigenMovimiento[];
 
   // ── Trazabilidad (Ley 21.719: registro de tratamiento) ──
   /** Cuándo lo recibió Velvet Wallet. Distinto de `fecha`, que es la del banco. */
   recibidoEn: string;
-  /** Referencia al documento crudo en MongoDB tal como llegó. null en carga manual. */
+  /** Referencia al documento crudo en MongoDB tal como llegó (también lo anotado a mano). */
   payloadCrudoRef: string | null;
   /** Correcciones del usuario, en orden. Vacío si no hay. */
   correcciones: Correccion[];

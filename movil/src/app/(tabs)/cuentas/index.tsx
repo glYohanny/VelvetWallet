@@ -83,7 +83,10 @@ export default function Cuentas() {
   // viven en Inicio: aquí solo se muestra el estado.
   const { conexiones, sincronizando } = useMovimientos();
 
-  const etiqueta = conexiones.length === 1 ? "1 conectada" : `${conexiones.length} conectadas`;
+  // "Conectada" es una institución con permiso por el SFA: el efectivo y las
+  // cartolas se muestran en la lista, pero no son conexiones.
+  const conectadas = conexiones.filter((c) => (c.fuente ?? "sfa") === "sfa").length;
+  const etiqueta = conectadas === 1 ? "1 conectada" : `${conectadas} conectadas`;
 
   return (
     <Pantalla titulo="Cuentas" etiqueta={sincronizando ? "Actualizando…" : etiqueta}>
@@ -116,7 +119,8 @@ export default function Cuentas() {
       <Seccion titulo="Instituciones" />
       {conexiones.length === 0 ? (
         <Nota>
-          Todavía no has autorizado ninguna institución. Puedes conectar tu banco desde Inicio.
+          Todavía no tienes instituciones. Puedes conectar tu banco desde Inicio, o importar una
+          cartola.
         </Nota>
       ) : (
         <View style={estilos.instituciones}>
@@ -125,6 +129,24 @@ export default function Cuentas() {
           ))}
         </View>
       )}
+
+      {/* Lo que no llega por el SFA: otro banco, meses anteriores, efectivo. */}
+      <View style={estilos.cargas}>
+        <GrupoDeFilas>
+          <Fila
+            titulo="Importar una cartola"
+            detalle="Otro banco o meses anteriores, en CSV"
+            icono="document-text-outline"
+            onPress={() => router.push("/cuentas/cartola")}
+          />
+          <Fila
+            titulo="Anotar un gasto en efectivo"
+            icono="cash-outline"
+            onPress={() => router.push("/gastos/nuevo")}
+            ultima
+          />
+        </GrupoDeFilas>
+      </View>
 
       <Seccion titulo="Tus datos" />
       <Aparecer demora={movimiento.escalon}>
@@ -165,5 +187,6 @@ const estilos = StyleSheet.create({
     borderRadius: radio.l,
     paddingHorizontal: espacio.l,
   },
+  cargas: { marginTop: espacio.m },
   salir: { marginTop: espacio.xl },
 });

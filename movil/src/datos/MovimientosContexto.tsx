@@ -86,6 +86,12 @@ type ValorMovimientos = {
   corregirCategoria: (id: string, categoria: string) => void;
   /** Apaga el destacado y el contador de la pestaña. */
   marcarVistas: () => void;
+  /** Un movimiento recién anotado a mano: entra a la lista sin volver a pedirla entera. */
+  agregarMovimiento: (m: Movimiento) => void;
+  /** Saca de la lista uno que se borró (solo los anotados a mano se pueden borrar). */
+  quitarMovimiento: (id: string) => void;
+  /** Vuelve a traer movimientos e instituciones, p. ej. después de importar una cartola. */
+  recargar: () => Promise<void>;
 };
 
 const Contexto = createContext<ValorMovimientos | null>(null);
@@ -297,22 +303,61 @@ export function ProveedorMovimientos({ children }: { children: ReactNode }) {
     setSincronizando(true);
     setError(null);
     try {
-      for (const c of await obtenerConexiones()) {
+      // Solo los bancos del SFA: el efectivo y las cartolas no tienen un
+      // permiso que retirar, y desvincular el banco no debería borrar lo que
+      // la persona anotó a mano o importó de otra institución.
+      const deBanco = (await obtenerConexiones()).filter((c) => (c.fuente ?? "sfa") === "sfa");
+      for (const c of deBanco) {
         await desvincularBanco(c.id);
       }
-      reemplazar([]);
+      const quitadas = new Set(deBanco.map((c) => c.institucion));
+      const quedan = actualesRef.current.filter((m) => !quitadas.has(m.institucion));
+      reemplazar(quedan);
       setNovedades(SIN_NOVEDADES);
       setClienteBanco(null);
-      setConexiones([]);
+      refrescarConexiones();
     } catch (e) {
       setError(e instanceof Error ? e.message : "No se pudo desvincular el banco.");
       throw e;
     } finally {
       setSincronizando(false);
     }
-  }, [reemplazar]);
+  }, [reemplazar, refrescarConexiones]);
 
   const marcarVistas = useCallback(() => setNovedades(SIN_NOVEDADES), []);
+
+  const agregarMovimiento = useCallback((m: Movimiento) => {
+    const lista = [m, ...actualesRef.current.filter((x) => x.id !== m.id)];
+    actualesRef.current = lista;
+    setMovimientos(lista);
+    setNovedades((previas) => ({ ...previas, nuevos: [...previas.nuevos, m.id] }));
+    // Puede haber nacido la cuenta Efectivo: la pantalla de Cuentas la muestra.
+    refrescarConexiones();
+  }, [refrescarConexiones]);
+
+  const quitarMovimiento = useCallback((id: string) => {
+    const lista = actualesRef.current.filter((x) => x.id !== id);
+    actualesRef.current = lista;
+    setMovimientos(lista);
+  }, []);
+
+  const recargar = useCallback(async () => {
+    generacion.current++;
+    try {
+      const entrantes = await obtenerMovimientos();
+      const r = fusionar(actualesRef.current, entrantes);
+      actualesRef.current = r.movimientos;
+      setMovimientos(r.movimientos);
+      if (r.nuevos.length > 0) {
+        setNovedades((previas) => ({
+          ...previas,
+          nuevos: [...new Set([...previas.nuevos, ...r.nuevos])],
+        }));
+      }
+    } finally {
+      refrescarConexiones();
+    }
+  }, [refrescarConexiones]);
 
   const valor = useMemo(
     () => ({
@@ -330,8 +375,11 @@ export function ProveedorMovimientos({ children }: { children: ReactNode }) {
       conexiones,
       corregirCategoria,
       marcarVistas,
+      agregarMovimiento,
+      quitarMovimiento,
+      recargar,
     }),
-    [movimientos, novedades, sincronizando, cargaInicial, ultimaSincronizacion, error, sincronizar, irAlBanco, completarVinculacion, desvincular, clienteBanco, conexiones, corregirCategoria, marcarVistas],
+    [movimientos, novedades, sincronizando, cargaInicial, ultimaSincronizacion, error, sincronizar, irAlBanco, completarVinculacion, desvincular, clienteBanco, conexiones, corregirCategoria, marcarVistas, agregarMovimiento, quitarMovimiento, recargar],
   );
 
   return <Contexto.Provider value={valor}>{children}</Contexto.Provider>;

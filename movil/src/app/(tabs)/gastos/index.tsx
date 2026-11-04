@@ -106,6 +106,16 @@ export default function Gastos() {
     return (
       <Pantalla titulo="Gastos">
         <Nota>Aún no tienes movimientos. Sincroniza para ver tus gastos aquí.</Nota>
+        <View style={estilos.fijos}>
+          <GrupoDeFilas>
+            <Fila
+              titulo="Anotar un gasto en efectivo"
+              icono="cash-outline"
+              onPress={() => router.push("/gastos/nuevo")}
+              ultima
+            />
+          </GrupoDeFilas>
+        </View>
       </Pantalla>
     );
   }
@@ -141,6 +151,12 @@ export default function Gastos() {
             detalle="Cuánto suman y cada cuánto vuelven"
             icono="repeat"
             onPress={() => router.push("/gastos/suscripciones")}
+          />
+          <Fila
+            titulo="Anotar un gasto en efectivo"
+            detalle="Lo que no pasa por ningún banco"
+            icono="cash-outline"
+            onPress={() => router.push("/gastos/nuevo")}
             ultima
           />
         </GrupoDeFilas>

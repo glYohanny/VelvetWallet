@@ -96,7 +96,11 @@ def _movimiento(r: dict) -> dict:
         "confianza": confianza,
         "esRecurrente": r["es_recurrente"],
         "excluido": r["estado"] == "excluido",
-        "origen": "sfa" if r["participante_sfa"] else "manual",
+        # Por dónde entró primero, y todas las fuentes que lo trajeron: un
+        # movimiento que llegó por la API y por una cartola es UNO (RF-09).
+        "origen": r["fuente"],
+        "fuentes": [r["fuente"]] + [f for f in (r.get("otras_fuentes") or [])
+                                    if f != r["fuente"]],
         "recibidoEn": r["created_at"].isoformat() if r["created_at"] else None,
         "payloadCrudoRef": r["payload_crudo_ref"],
         "correcciones": r.get("correcciones") or [],
@@ -108,7 +112,9 @@ def _movimiento(r: dict) -> dict:
 _SELECT_MOVIMIENTOS = """
     SELECT t.id, t.monto, t.moneda, t.fecha, t.glosa_original,
            t.glosa_normalizada, t.estado, t.es_recurrente,
-           t.payload_crudo_ref, t.created_at, t.categoria_origen,
+           t.payload_crudo_ref, t.created_at, t.categoria_origen, t.fuente,
+           ARRAY(SELECT DISTINCT o.fuente FROM transaccion_origen o
+                 WHERE o.transaccion_id = t.id) AS otras_fuentes,
            t.confianza_clasificacion AS confianza,
            c.id_externo        AS cuenta_externa,
            cat.nombre          AS categoria,
@@ -127,7 +133,11 @@ _SELECT_MOVIMIENTOS = """
                    'fecha', to_char(co.created_at AT TIME ZONE 'UTC',
                                     'YYYY-MM-DD"T"HH24:MI:SS"Z"'),
                    'detalle', co.valor->>'categoria')
-                   ORDER BY co.created_at) AS correcciones
+                   ORDER BY co.created_at)
+               -- Elegir la categoría al anotar un gasto a mano no es corregir
+               -- nada: cuenta como decisión de la persona, pero no se lista.
+               FILTER (WHERE NOT COALESCE((co.valor->>'al_registrar')::boolean, false))
+               AS correcciones
         FROM correccion co WHERE co.transaccion_id = t.id
     ) corr ON true
 """

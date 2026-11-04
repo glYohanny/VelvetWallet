@@ -6,14 +6,17 @@
  * aparte y el dato original del banco nunca se modifica (RF-14 / RNF-31).
  */
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
+import { Boton } from "@/components/Boton";
 import { Ficha } from "@/components/Ficha";
 import { Tocable } from "@/components/Movimiento";
 import { Nota, Pantalla, Seccion } from "@/components/Pantalla";
 import { colores, espacio, fuente, radio } from "@/constants/tema";
 import { useMovimientos } from "@/datos/MovimientosContexto";
 import type { Conexion, Correccion, Movimiento, OrigenMovimiento } from "@/modelo/tipos";
+import { borrarMovimiento } from "@/servicios/cargas";
 import { fechaCorta, fechaHora, pesos } from "@/utils/formato";
 
 const ORIGEN: Record<OrigenMovimiento, string> = {
@@ -53,7 +56,12 @@ function tipoCuenta(m: Movimiento, conexiones: Conexion[]): string | undefined {
  * vacío (RNF-33).
  */
 function describirClasificacion(m: Movimiento): string {
-  if (m.estadoCategoria === "corregida") return "Lo corregiste tú";
+  if (m.estadoCategoria === "corregida") {
+    // En lo anotado a mano no hubo nada que corregir: la eligió al anotarlo.
+    return m.origen === "manual" && m.correcciones.length === 0
+      ? "La elegiste tú al anotarlo"
+      : "Lo corregiste tú";
+  }
   if (m.categoria === null) return "El sistema no alcanzó la confianza mínima";
 
   switch (m.origenClasificacion) {
@@ -81,8 +89,25 @@ function resumenCorrecciones(lista: Correccion[]): string {
 export default function DetalleMovimiento() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const { movimientos, conexiones } = useMovimientos();
+  const { movimientos, conexiones, quitarMovimiento } = useMovimientos();
   const m = movimientos.find((x) => x.id === id);
+  const [confirmarBorrar, setConfirmarBorrar] = useState(false);
+  const [borrando, setBorrando] = useState(false);
+  const [errorBorrar, setErrorBorrar] = useState<string | null>(null);
+
+  async function borrar() {
+    if (!m) return;
+    setBorrando(true);
+    setErrorBorrar(null);
+    try {
+      await borrarMovimiento(m.id);
+      router.back();
+      quitarMovimiento(m.id);
+    } catch (e) {
+      setErrorBorrar(e instanceof Error ? e.message : "No se pudo borrar.");
+      setBorrando(false);
+    }
+  }
 
   if (!m) {
     return (
@@ -93,7 +118,8 @@ export default function DetalleMovimiento() {
   }
 
   const esCargo = m.monto < 0;
-  const subtitulo = [m.institucion, tipoCuenta(m, conexiones), fechaHora(m.fecha)]
+  const tipo = tipoCuenta(m, conexiones);
+  const subtitulo = [m.institucion, tipo !== m.institucion ? tipo : null, fechaHora(m.fecha)]
     .filter(Boolean)
     .join(" · ");
   const sinIdentificar = m.comercio === null;
@@ -118,7 +144,11 @@ export default function DetalleMovimiento() {
           { etiqueta: "Clasificó", valor: decision, destacar: m.categoria === null },
           ...(m.categoriaBanco ? [{ etiqueta: "Categoría del banco", valor: m.categoriaBanco }] : []),
           { etiqueta: "Estado", valor: m.excluido ? "Excluido" : "Confirmado" },
-          { etiqueta: "Origen", valor: ORIGEN[m.origen] },
+          {
+            etiqueta: (m.fuentes?.length ?? 1) > 1 ? "Fuentes" : "Origen",
+            // Llegó por dos caminos y es UN movimiento: se dicen los dos (RF-09).
+            valor: (m.fuentes?.length ? m.fuentes : [m.origen]).map((f) => ORIGEN[f]).join(" + "),
+          },
         ]}
       />
 
@@ -140,7 +170,25 @@ export default function DetalleMovimiento() {
         ]}
       />
 
-      <Text style={estilos.pie}>Tu corrección no modifica el dato del banco.</Text>
+      {m.origen === "manual" ? (
+        <>
+          {confirmarBorrar ? (
+            <View style={estilos.borrar}>
+              <Text style={estilos.borrarTexto}>¿Borrar este movimiento?</Text>
+              <Boton titulo="Sí, borrar" onPress={borrar} cargando={borrando} />
+              <Boton titulo="No" onPress={() => setConfirmarBorrar(false)} secundario />
+            </View>
+          ) : (
+            <Text style={estilos.enlaceBorrar} onPress={() => setConfirmarBorrar(true)}>
+              Borrar este movimiento
+            </Text>
+          )}
+          {errorBorrar ? <Text style={estilos.errorBorrar}>{errorBorrar}</Text> : null}
+          <Text style={estilos.pie}>Lo anotaste tú: lo puedes borrar si te equivocaste.</Text>
+        </>
+      ) : (
+        <Text style={estilos.pie}>Tu corrección no modifica el dato del banco.</Text>
+      )}
     </Pantalla>
   );
 }
@@ -163,6 +211,16 @@ const estilos = StyleSheet.create({
     alignItems: "center",
   },
   accionTexto: { color: colores.texto, fontFamily: fuente.textoFuerte, fontSize: 15 },
+  borrar: { gap: espacio.s, marginTop: espacio.l },
+  borrarTexto: { color: colores.texto, fontFamily: fuente.textoFuerte, fontSize: 15, textAlign: "center" },
+  enlaceBorrar: {
+    color: colores.alerta,
+    fontFamily: fuente.textoFuerte,
+    fontSize: 15,
+    textAlign: "center",
+    marginTop: espacio.l,
+  },
+  errorBorrar: { color: colores.acento, fontFamily: fuente.textoMedio, fontSize: 14, textAlign: "center" },
   pie: {
     color: colores.texto2,
     fontFamily: fuente.texto,

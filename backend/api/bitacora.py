@@ -40,6 +40,9 @@ ACCIONES = {
     "cuenta.suprimir":       "Solicitaste eliminar tu cuenta y tus datos",
     "categoria.corregir":    "Corregiste la categoría de un movimiento",
     "perfil.actualizar":     "Cambiaste tu sueldo declarado",
+    "datos.importar":        "Importaste una cartola",
+    "datos.registrar_manual": "Anotaste un movimiento a mano",
+    "datos.borrar_manual":   "Borraste un movimiento que habías anotado",
 }
 
 

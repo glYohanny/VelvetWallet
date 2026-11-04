@@ -39,6 +39,7 @@ from .cliente_sfa import ClienteSFA, ReautorizacionRequerida
 from .normalizador import (categoria_propuesta, credito_canonico, cuenta_canonica,
                            monto_con_signo,
                            transacciones_canonicas, _categoria_origen, _glosa)
+from .dedup import TOLERANCIA_DIAS, Movimiento as Mov, emparejar
 from .repositorio import Repositorio
 
 # Qué datos se piden al banco (RAR — Rich Authorization Request). Es el alcance
@@ -116,6 +117,35 @@ def _obtener_acceso(repo: Repositorio, banco: ClienteSFA, conexion_id: str,
     return consent_id, info, alcance
 
 
+def recalcular_recurrencias(repo: Repositorio, usuario_id: str) -> int:
+    """
+    Corre el detector sobre TODO el historial del usuario, venga de la fuente
+    que venga: una cartola con meses antiguos puede completar una serie que la
+    API sola no alcanzaba a mostrar.
+    """
+    cobros = [
+        Cobro(id=i, fecha=f, monto=float(monto), glosa=glosa or "")
+        for i, f, monto, glosa in repo.cobros_del_usuario(usuario_id)
+    ]
+    return repo.guardar_suscripciones(usuario_id, detectar(cobros))
+
+
+def _ya_entraron_por_cartola(repo: Repositorio, cuenta_id: str, datos: list[dict]) -> dict:
+    """{índice en `datos`: transaccion_id} de los que ya estaban por otra fuente."""
+    if not datos:
+        return {}
+    margen = timedelta(days=TOLERANCIA_DIAS)
+    existentes = repo.candidatos_a_fusion(cuenta_id, "sfa",
+                                          min(d["fecha"] for d in datos) - margen,
+                                          max(d["fecha"] for d in datos) + margen)
+    if not existentes:
+        return {}
+    return emparejar(
+        [Mov(i, d["fecha"], d["monto"], d["glosa_original"] or "") for i, d in enumerate(datos)],
+        [Mov(tid, f, m, g) for tid, f, m, g in existentes],
+    )
+
+
 def _huella(mov: dict) -> tuple:
     """Lo que se compara con lo guardado para saber si el movimiento cambió."""
     return (monto_con_signo(mov["amount"], mov.get("transactionsType")),
@@ -144,6 +174,7 @@ def _sincronizar_conexion(repo: Repositorio, usuario_id: str, conexion_id: str,
     insertadas = 0
     actualizadas = 0
     sin_cambio = 0
+    fusionadas = 0
     # Para el detector de recurrencias: por comercio, cuántas veces y en cuántos
     # meses distintos aparece como cargo.
 
@@ -192,6 +223,20 @@ def _sincronizar_conexion(repo: Repositorio, usuario_id: str, conexion_id: str,
                 if cambios:
                     refs = repo.guardar_crudo_bulk(conexion_id, endpoint, cambios)
                     datos = transacciones_canonicas(usuario_id, account_id, cambios)
+                    # 3a. Lo que la API trae por primera vez puede haber entrado
+                    #     antes por una cartola (historial importado): se fusiona
+                    #     con ese movimiento en vez de duplicarlo (RF-09).
+                    nuevos = [i for i, m in enumerate(cambios) if m["transactionID"] not in guardado]
+                    pares = _ya_entraron_por_cartola(repo, cuenta_id, [datos[i] for i in nuevos])
+                    for j, transaccion_id in pares.items():
+                        i = nuevos[j]
+                        repo.adoptar_desde_sfa(transaccion_id, datos[i], refs[i])
+                    fusionadas += len(pares)
+                    if pares:
+                        quedan = [i for i in range(len(datos))
+                                  if i not in {nuevos[j] for j in pares}]
+                        refs = [refs[i] for i in quedan]
+                        datos = [datos[i] for i in quedan]
                     res = repo.upsert_transacciones_bulk(cuenta_id, refs, datos)
                     insertadas += res["insertadas"]
                     actualizadas += res["actualizadas"]
@@ -204,12 +249,8 @@ def _sincronizar_conexion(repo: Repositorio, usuario_id: str, conexion_id: str,
     #    cerrar una periodicidad que antes no se veía. El detector es
     #    motor/recurrencias.py, que no sabe de base de datos.
     suscripciones = 0
-    if insertadas or actualizadas:   # sin movimientos nuevos, nada cambia
-        cobros = [
-            Cobro(id=i, fecha=f, monto=float(monto), glosa=glosa or "")
-            for i, f, monto, glosa in repo.cobros_del_usuario(usuario_id)
-        ]
-        suscripciones = repo.guardar_suscripciones(usuario_id, detectar(cobros))
+    if insertadas or actualizadas or fusionadas:   # sin movimientos nuevos, nada cambia
+        suscripciones = recalcular_recurrencias(repo, usuario_id)
 
     # 4b. Gastos que siguen sin categoría (de antes del clasificador, o que un
     #     modelo reentrenado ahora sí reconoce).
@@ -226,6 +267,7 @@ def _sincronizar_conexion(repo: Repositorio, usuario_id: str, conexion_id: str,
         "insertadas": insertadas,
         "actualizadas": actualizadas,
         "sin_cambio": sin_cambio,
+        "fusionadas": fusionadas,
         "clasificados_ahora": clasificados,
         "suscripciones": suscripciones,
         "creditos": creditos,
