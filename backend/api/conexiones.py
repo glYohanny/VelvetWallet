@@ -41,7 +41,8 @@ from ingesta.importacion import ID_EFECTIVO
 from ingesta.cliente_sfa import AutorizacionFallida, ClienteSFA, ReautorizacionRequerida
 from ingesta.normalizador import etiqueta_tipo_cuenta
 from ingesta.repositorio import Repositorio
-from ingesta.sincronizar import (PERMISOS, ConexionDeOtroCliente, sincronizar_usuario,
+from ingesta.sincronizar import (PERMISOS, ConexionDeOtroCliente, bancos_conectados,
+                                 sincronizar_todos, sincronizar_usuario,
                                  vincular_conexion)
 from ingesta import config as config_ingesta
 
@@ -54,7 +55,7 @@ VIGENCIA_INICIO = timedelta(minutes=10)
 PENDIENTES: dict[str, dict] = {}
 
 
-def _explicar_falla(e: Exception) -> str:
+def _explicar_falla(e: Exception, banco: str | None = None) -> str:
     """Dice QUÉ servicio falló, para no culpar al banco de un problema de la base."""
     import httpx
     import pymongo.errors
@@ -66,7 +67,8 @@ def _explicar_falla(e: Exception) -> str:
     if isinstance(e, psycopg.Error):
         return "No se pudo conectar con PostgreSQL (Neon). Revisa DATABASE_URL. (%s)" % nombre
     if isinstance(e, httpx.ConnectError):
-        return "No se pudo conectar con el banco simulado. ¿Está corriendo la EFS en el 8001? (%s)" % nombre
+        return "No se pudo conectar con %s. ¿Está corriendo su simulador? (%s)" % (
+            banco or "el banco", nombre)
     if isinstance(e, httpx.HTTPStatusError):
         return "El banco respondió con error %d. (%s)" % (e.response.status_code, nombre)
     return "No se pudo sincronizar con el banco. (%s)" % nombre
@@ -110,6 +112,10 @@ def iniciar_vinculacion(datos: SolicitudInicio | None = None,
     """
     datos = datos or SolicitudInicio()
     _limpiar_vencidas()
+    b = config_ingesta.banco_sfa(datos.institucion)
+    if b is None:
+        raise HTTPException(status_code=422,
+                            detail="%s no es un banco del Sistema de Finanzas Abiertas." % datos.institucion)
 
     # PKCE: el verifier se queda aquí; al banco solo va su huella (challenge).
     verifier = secrets.token_urlsafe(48)
@@ -119,22 +125,21 @@ def iniciar_vinculacion(datos: SolicitudInicio | None = None,
     state = secrets.token_urlsafe(24)
 
     try:
-        with ClienteSFA(config_ingesta.SFA_BASE_URL) as banco:
+        with ClienteSFA(b.base_url) as banco:
             request_uri = banco.solicitar_autorizacion(
-                config_ingesta.SFA_CLIENT_ID, config_ingesta.SFA_CLIENT_SECRET, PERMISOS,
+                b.client_id, b.client_secret, PERMISOS,
                 config_ingesta.SFA_REDIRECT_URI, state, challenge)
     except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=_explicar_falla(e))
+        raise HTTPException(status_code=502, detail=_explicar_falla(e, b.nombre))
 
     PENDIENTES[state] = {
         "usuario_id": usuario_id,
         "code_verifier": verifier,
-        "institucion": datos.institucion or config_ingesta.INSTITUCION_NOMBRE,
+        "institucion": b.nombre,
         "retorno": _retorno_permitido(datos.retorno),
         "expira": datetime.now(timezone.utc) + VIGENCIA_INICIO,
     }
-    url = config_ingesta.SFA_AUTORIZAR_URL + "?" + urlencode(
-        {"client_id": config_ingesta.SFA_CLIENT_ID, "request_uri": request_uri})
+    url = b.autorizar_url + "?" + urlencode({"client_id": b.client_id, "request_uri": request_uri})
     return {"urlAutorizacion": url, "expiraEn": int(VIGENCIA_INICIO.total_seconds())}
 
 
@@ -157,9 +162,11 @@ def retorno_del_banco(state: str | None = None, code: str | None = None,
                                 **({} if error == "access_denied" else {"motivo": "fallo"}))
 
     try:
-        with ClienteSFA(config_ingesta.SFA_BASE_URL) as banco:
+        # El código se canjea en el MISMO banco que lo emitió.
+        b = config_ingesta.banco_sfa(pendiente["institucion"])
+        with ClienteSFA(b.base_url) as banco:
             otorgado = banco.canjear_codigo(
-                config_ingesta.SFA_CLIENT_ID, config_ingesta.SFA_CLIENT_SECRET, code,
+                b.client_id, b.client_secret, code,
                 config_ingesta.SFA_REDIRECT_URI, pendiente["code_verifier"])
         vincular_conexion(pendiente["usuario_id"], otorgado, pendiente["institucion"])
         with db.conectar() as conn:
@@ -179,36 +186,88 @@ class SolicitudConexion(BaseModel):
     institucion: str | None = None
 
 
-@router.post("/conexiones", summary="Sincronizar un banco ya autorizado")
+@router.post("/conexiones", summary="Sincronizar los bancos ya autorizados")
 def conectar_banco(
     datos: SolicitudConexion | None = None,
     usuario_id: str = Depends(usuario_actual),
 ):
     """
-    Trae (o vuelve a traer) las cuentas y movimientos del banco ya autorizado,
-    usando el permiso guardado. Si todavía no hay permiso responde 409
-    `reautorizar`: la app debe mandar al usuario al banco (/iniciar).
+    Trae (o vuelve a traer) las cuentas y movimientos con el permiso guardado.
+
+    · Con `institucion`: solo ese banco. Si todavía no hay permiso responde
+      409 `reautorizar` y la app manda a la persona a ese banco (/iniciar).
+    · Sin `institucion`: TODOS los bancos vinculados, cada uno por separado
+      (RF-07). Si uno no responde o su permiso venció, los demás se
+      sincronizan igual y la respuesta lo dice banco por banco en `bancos`.
+      Solo es un error si no hay ningún banco vinculado o si fallaron todos.
     """
     datos = datos or SolicitudConexion()
-    institucion = datos.institucion or config_ingesta.INSTITUCION_NOMBRE
-    try:
-        resumen = sincronizar_usuario(usuario_id, institucion)
-    except ReautorizacionRequerida as e:
-        raise HTTPException(status_code=409, detail={"codigo": "reautorizar", "mensaje": str(e)})
-    except ConexionDeOtroCliente as e:
-        raise HTTPException(status_code=409, detail={"codigo": "otro_cliente", "mensaje": str(e)})
-    except Exception as e:  # noqa: BLE001 — se traduce a un error claro para la app
-        raise HTTPException(status_code=502, detail=_explicar_falla(e))
+    if datos.institucion:
+        if config_ingesta.banco_sfa(datos.institucion) is None:
+            raise HTTPException(status_code=422, detail="%s no es un banco del SFA." % datos.institucion)
+        try:
+            resumen = sincronizar_usuario(usuario_id, datos.institucion)
+        except ReautorizacionRequerida as e:
+            raise HTTPException(status_code=409, detail={"codigo": "reautorizar", "mensaje": str(e)})
+        except ConexionDeOtroCliente as e:
+            raise HTTPException(status_code=409, detail={"codigo": "otro_cliente", "mensaje": str(e)})
+        except Exception as e:  # noqa: BLE001 — se traduce a un error claro para la app
+            raise HTTPException(status_code=502, detail=_explicar_falla(e, datos.institucion))
+        resultados = [{"institucion": config_ingesta.banco_sfa(datos.institucion).nombre,
+                       "ok": True, "resumen": resumen}]
+    else:
+        resultados = sincronizar_todos(usuario_id)
+        if not resultados:
+            raise HTTPException(status_code=409, detail={
+                "codigo": "reautorizar",
+                "mensaje": "Todavía no tienes un banco vinculado: autoriza el acceso en el "
+                           "sitio de tu banco."})
+        if not any(r["ok"] for r in resultados):
+            # Todos fallaron: si alguno solo necesita reautorizar, eso es lo
+            # que la persona puede resolver, así que se dice primero.
+            primero = next((r for r in resultados if r["codigo"] == "reautorizar"), resultados[0])
+            raise HTTPException(
+                status_code=409 if primero["codigo"] != "sin_respuesta" else 502,
+                detail={"codigo": primero["codigo"], "mensaje": primero["mensaje"],
+                        "bancos": [_sin_resumen(r) for r in resultados]})
+
+    buenos = [r["resumen"] for r in resultados if r["ok"]]
     return {
-        "institucion": institucion,
-        "cliente": resumen["cliente"],
-        "cuentas": resumen["cuentas"],
-        "movimientosNuevos": resumen["insertadas"],
-        "movimientosActualizados": resumen["actualizadas"],
-        "movimientosSinCambio": resumen["sin_cambio"],
-        "creditos": resumen.get("creditos", 0),
-        "suscripciones": resumen.get("suscripciones", 0),
+        # Los campos de siempre, sumados sobre los bancos que respondieron.
+        "institucion": ", ".join(r["institucion"] for r in resultados if r["ok"]),
+        "cliente": buenos[0]["cliente"],
+        "cuentas": sum(b["cuentas"] for b in buenos),
+        "movimientosNuevos": sum(b["insertadas"] for b in buenos),
+        "movimientosActualizados": sum(b["actualizadas"] for b in buenos),
+        "movimientosSinCambio": sum(b["sin_cambio"] for b in buenos),
+        "creditos": sum(b.get("creditos", 0) for b in buenos),
+        "suscripciones": max((b.get("suscripciones", 0) for b in buenos), default=0),
+        # Y el detalle, banco por banco.
+        "bancos": [_sin_resumen(r) for r in resultados],
     }
+
+
+def _sin_resumen(r: dict) -> dict:
+    """El resultado de un banco, como lo ve la app."""
+    if r["ok"]:
+        b = r["resumen"]
+        return {"institucion": r["institucion"], "ok": True,
+                "movimientosNuevos": b["insertadas"], "movimientosActualizados": b["actualizadas"]}
+    return {"institucion": r["institucion"], "ok": False, "codigo": r["codigo"],
+            "mensaje": r["mensaje"]}
+
+
+@router.get("/instituciones", summary="Bancos del SFA a los que se puede conectar")
+def listar_instituciones(usuario_id: str = Depends(usuario_actual)):
+    """
+    Los bancos participantes con los que Velvet está registrado, y si la
+    persona ya tiene cada uno vinculado. Es lo que la app ofrece al conectar.
+    """
+    conectados = {n.lower() for n in bancos_conectados(usuario_id)}
+    return {"instituciones": [
+        {"nombre": b.nombre, "conectada": b.nombre.lower() in conectados}
+        for b in config_ingesta.BANCOS_SFA
+    ]}
 
 
 # Desde cuándo el dato deja de ser confiable y la app tiene que advertirlo
@@ -356,11 +415,14 @@ def desvincular_banco(conexion_id: str, peticion: Request,
             raise HTTPException(status_code=404, detail="Conexión no encontrada.")
 
         alcance = repo.consentimiento_vigente(conexion_id) or {}
-        if alcance.get("consentId"):
+        # Se revoca en el banco al que pertenece ESTA conexión.
+        b = config_ingesta.banco_sfa(repo.conn.execute(
+            """SELECT i.nombre FROM conexion cx JOIN institucion i ON i.id = cx.institucion_id
+               WHERE cx.id = %s""", (conexion_id,)).fetchone()[0])
+        if alcance.get("consentId") and b is not None:
             try:  # mejor esfuerzo: si la EFS no está, igual se borra de nuestro lado
-                with ClienteSFA(config_ingesta.SFA_BASE_URL) as banco:
-                    banco.obtener_token_participante(config_ingesta.SFA_CLIENT_ID,
-                                                     config_ingesta.SFA_CLIENT_SECRET)
+                with ClienteSFA(b.base_url) as banco:
+                    banco.obtener_token_participante(b.client_id, b.client_secret)
                     banco.revocar_consentimiento(alcance["consentId"])
             except Exception:  # noqa: BLE001
                 pass

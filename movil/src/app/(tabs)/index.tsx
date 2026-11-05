@@ -13,6 +13,7 @@ import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { AvisoClasificacion } from "@/components/AvisoClasificacion";
 import { BarraCategorias } from "@/components/BarraCategorias";
 import { Boton } from "@/components/Boton";
+import { Chips } from "@/components/Chips";
 import { Cifra } from "@/components/Cifra";
 import { Comparacion } from "@/components/Comparacion";
 import { EsqueletoInicio } from "@/components/Esqueleto";
@@ -71,16 +72,32 @@ function PanelAutorizacion({
   ocupado,
   onIrAlBanco,
   onCancelar,
+  bancos,
+  banco,
+  onElegir,
 }: {
   motivo?: string | null;
   ocupado: boolean;
   onIrAlBanco: () => void;
   onCancelar?: () => void;
+  /** Los bancos que se pueden elegir. Con uno solo no se muestra la elección. */
+  bancos: string[];
+  banco: string;
+  onElegir: (banco: string) => void;
 }) {
   return (
     <View style={estilos.consent}>
       <Text style={estilos.consentTitulo}>Autorización de acceso</Text>
       {motivo ? <Text style={estilos.consentMotivo}>{motivo}</Text> : null}
+      {bancos.length > 1 ? (
+        <View style={estilos.elegirBanco}>
+          <Chips
+            opciones={bancos.map((b) => ({ valor: b, etiqueta: b }))}
+            valor={banco}
+            onCambio={onElegir}
+          />
+        </View>
+      ) : null}
       <Text style={estilos.consentTexto}>
         Velvet Wallet solicita tu permiso para leer, en tu banco:
       </Text>
@@ -88,12 +105,12 @@ function PanelAutorizacion({
       <Text style={estilos.consentItem}>•  Tus movimientos</Text>
 
       <Text style={estilos.consentNota}>
-        Te llevaremos al sitio de Banco Simulado SFA. Inicias sesión allá con tu RUT y tu clave y
-        decides si autorizas. Velvet nunca ve tu clave, y puedes revocar el acceso cuando quieras.
+        Te llevaremos al sitio de {banco}. Inicias sesión allá con tu RUT y tu clave y decides si
+        autorizas. Velvet nunca ve tu clave, y puedes revocar el acceso cuando quieras.
       </Text>
 
       <Boton
-        titulo={ocupado ? "Abriendo tu banco…" : "Ir a Banco Simulado SFA"}
+        titulo={ocupado ? "Abriendo tu banco…" : `Ir a ${banco}`}
         onPress={onIrAlBanco}
         cargando={ocupado}
         style={estilos.autorizar}
@@ -109,8 +126,10 @@ function PanelAutorizacion({
 
 export default function Inicio() {
   const router = useRouter();
-  const { movimientos, sincronizando, cargaInicial, sincronizar, irAlBanco, completarVinculacion, desvincular, clienteBanco, error } =
-    useMovimientos();
+  const {
+    movimientos, sincronizando, cargaInicial, sincronizar, irAlBanco, completarVinculacion,
+    clienteBanco, conexiones, instituciones, error,
+  } = useMovimientos();
   // Vuelta desde el sitio del banco (web): ?banco=vinculado|rechazado|error&motivo=…
   const parametros = useLocalSearchParams<{ banco?: string; motivo?: string }>();
   const vueltaProcesada = useRef(false);
@@ -120,7 +139,8 @@ export default function Inicio() {
   const [solicitando, setSolicitando] = useState(false);
   // Cuando el permiso guardado ya no sirve, hay que volver a autorizar en el banco.
   const [reautorizar, setReautorizar] = useState<string | null>(null);
-  const [confirmarDesvincular, setConfirmarDesvincular] = useState(false);
+  // A qué banco se va a autorizar. null = el primero que falte por conectar.
+  const [bancoElegido, setBancoElegido] = useState<string | null>(null);
   // Mes que mira el panel. null = el más reciente con datos; cambia al tocar
   // una barra del gráfico de meses.
   const [mesElegido, setMesElegido] = useState<string | null>(null);
@@ -150,20 +170,29 @@ export default function Inicio() {
     if (ir) router.push("/cuentas/privacidad");
   }
 
-  async function alDesvincular() {
-    try {
-      await desvincular();
-    } catch {
-      // El mensaje ya quedó en `error`.
-    } finally {
-      setConfirmarDesvincular(false);
-    }
-  }
+  // Los bancos del SFA que se pueden ofrecer y el que está elegido. Sin la
+  // lista (backend antiguo), queda el de siempre.
+  const nombresBancos = instituciones.length ? instituciones.map((i) => i.nombre) : ["tu banco"];
+  const porConectar = instituciones.filter((i) => !i.conectada).map((i) => i.nombre);
+  const banco = bancoElegido ?? porConectar[0] ?? nombresBancos[0];
+  const bancosVinculados = conexiones.filter((c) => (c.fuente ?? "sfa") === "sfa").length;
 
   async function alSincronizar() {
     setResultado(null);
     try {
-      setResultado(describirResultado(await sincronizar()));
+      const r = await sincronizar();
+      // Cada banco por separado (RF-07): si uno no respondió, el resto llegó
+      // igual, y se dice cuál faltó en vez de esconderlo.
+      const fallidos = r.bancos.filter((b) => !b.ok && b.codigo === "sin_respuesta");
+      const vencido = r.bancos.find((b) => !b.ok && b.codigo === "reautorizar");
+      setResultado(
+        [describirResultado(r), ...fallidos.map((b) => `${b.institucion} no respondió: se muestran sus datos de la última vez.`)]
+          .join("\n"),
+      );
+      if (vencido) {
+        setBancoElegido(vencido.institucion);
+        setReautorizar(`El permiso de ${vencido.institucion} venció. Renuévalo en su sitio.`);
+      }
     } catch (e) {
       if (e instanceof ErrorSincronizacion && e.codigo === "reautorizar") {
         setReautorizar(e.message);
@@ -192,7 +221,7 @@ export default function Inicio() {
     setAviso(null);
     setAbriendoBanco(true);
     try {
-      const vuelta = await irAlBanco(); // en web la página se va al banco
+      const vuelta = await irAlBanco(banco); // en web la página se va al banco
       if (vuelta) await procesarVuelta(vuelta);
     } catch {
       // El mensaje ya quedó en `error`.
@@ -253,6 +282,9 @@ export default function Inicio() {
               setSolicitando(false);
               setReautorizar(null);
             }}
+            bancos={nombresBancos}
+            banco={banco}
+            onElegir={setBancoElegido}
           />
         )}
 
@@ -331,15 +363,28 @@ export default function Inicio() {
             se guardara el cliente del banco (sin nombre), para poder cambiarlo. */}
         <View style={estilos.vinculoFila}>
           <Text style={estilos.vinculo}>
-            {clienteBanco?.nombre
-              ? `Banco vinculado como ${clienteBanco.nombre} · ${clienteBanco.rut}`
-              : "Banco vinculado"}
+            {bancosVinculados > 1
+              ? `${bancosVinculados} bancos vinculados${clienteBanco?.nombre ? " como " + clienteBanco.nombre : ""}`
+              : clienteBanco?.nombre
+                ? `Banco vinculado como ${clienteBanco.nombre} · ${clienteBanco.rut}`
+                : "Banco vinculado"}
           </Text>
-          {!confirmarDesvincular ? (
-            <Pressable onPress={() => setConfirmarDesvincular(true)} hitSlop={8}>
-              <Text style={estilos.vinculoAccion}>Desvincular</Text>
+          {porConectar.length > 0 && !solicitando ? (
+            <Pressable
+              onPress={() => {
+                setBancoElegido(porConectar[0]);
+                setSolicitando(true);
+              }}
+              hitSlop={8}
+            >
+              <Text style={estilos.vinculoAccion}>Conectar otro</Text>
             </Pressable>
-          ) : null}
+          ) : (
+            // Desvincular o renovar va banco por banco, en Cuentas.
+            <Pressable onPress={() => router.push("/cuentas")} hitSlop={8}>
+              <Text style={estilos.vinculoAccion}>Administrar</Text>
+            </Pressable>
+          )}
         </View>
 
         <Aparecer style={estilos.par} demora={movimiento.escalon}>
@@ -355,28 +400,19 @@ export default function Inicio() {
         </Aparecer>
       </Superficie>
 
-      {confirmarDesvincular ? (
-        <View style={estilos.confirmar}>
-          <Text style={estilos.confirmarTexto}>
-            Se revoca el permiso y se borran de Velvet tus cuentas y movimientos de este banco.
-          </Text>
-          <View style={estilos.confirmarAcciones}>
-            <Pressable onPress={() => setConfirmarDesvincular(false)} style={estilos.cancelar}>
-              <Text style={estilos.cancelarTexto}>Cancelar</Text>
-            </Pressable>
-            <Pressable onPress={alDesvincular} style={estilos.cancelar}>
-              <Text style={estilos.confirmarSi}>Sí, desvincular</Text>
-            </Pressable>
-          </View>
-        </View>
-      ) : null}
-
-      {reautorizar ? (
+      {reautorizar || solicitando ? (
         <PanelAutorizacion
           motivo={reautorizar}
           ocupado={abriendoBanco || sincronizando}
           onIrAlBanco={alIrAlBanco}
-          onCancelar={() => setReautorizar(null)}
+          onCancelar={() => {
+            setReautorizar(null);
+            setSolicitando(false);
+          }}
+          // Al renovar un permiso se va a ESE banco; al conectar otro, a los que faltan.
+          bancos={reautorizar ? [banco] : porConectar}
+          banco={banco}
+          onElegir={setBancoElegido}
         />
       ) : null}
 
@@ -535,6 +571,7 @@ const estilos = StyleSheet.create({
   confirmarAcciones: { flexDirection: "row", justifyContent: "flex-end", gap: espacio.l },
   confirmarSi: { color: colores.acento, fontFamily: fuente.textoFuerte, fontSize: 14 },
   autorizar: { marginTop: espacio.m },
+  elegirBanco: { marginTop: espacio.m, marginBottom: -espacio.s },
   cancelar: { alignItems: "center", paddingVertical: espacio.s, marginTop: espacio.xs },
   cancelarTexto: { color: colores.texto3, fontFamily: fuente.texto, fontSize: 14 },
   // ── resto ──

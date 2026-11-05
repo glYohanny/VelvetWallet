@@ -1,11 +1,12 @@
 ﻿<#
 .SYNOPSIS
-  Levanta Velvet Wallet completo con un solo comando: simulador del banco (8001),
-  backend (8000) y la app en el navegador (8081).
+  Levanta Velvet Wallet completo con un solo comando: los dos bancos simulados
+  (Banco Simulado SFA en 8001 y Banco Austral en 8002), el backend (8000) y la
+  app en el navegador (8081).
 
 .DESCRIPTION
   Hace, en orden:
-    1. Cierra lo que haya quedado corriendo en los puertos 8000, 8001 y 8081
+    1. Cierra lo que haya quedado corriendo en los puertos 8000, 8001, 8002 y 8081
        (un simulador o backend viejo de otra carpeta es la causa típica de
        errores raros, como un 404 en /panel).
     2. Prepara el entorno de Python en .venv (solo la primera vez, o si
@@ -30,7 +31,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Raiz = $PSScriptRoot
-$Puertos = @{ 8001 = "simulador"; 8000 = "backend"; 8081 = "app" }
+$Puertos = @{ 8001 = "simulador"; 8002 = "Banco Austral"; 8000 = "backend"; 8081 = "app" }
 
 function Paso($texto)  { Write-Host ""; Write-Host "==> $texto" -ForegroundColor Cyan }
 function Ok($texto)    { Write-Host "    $texto" -ForegroundColor Green }
@@ -132,6 +133,12 @@ Paso "Levantando el simulador del banco (8001)"
 Abrir-Ventana "Velvet - Simulador :8001" (Join-Path $Raiz "simulador") "& '$Py' -m uvicorn app.main:app --port 8001 --reload"
 $okSim = Esperar-Servicio "Simulador" "http://localhost:8001/health" 40
 
+# Un segundo banco, con otros clientes y movimientos: para probar que la app
+# recibe más de un banco a la vez (RF-07). Si no levanta, lo demás sigue igual.
+Paso "Levantando el segundo banco: Banco Austral (8002)"
+Abrir-Ventana "Velvet - Banco Austral :8002" (Join-Path $Raiz "simulador") "`$env:SFA_BANCO = 'austral'; & '$Py' -m uvicorn app.main:app --port 8002 --reload"
+$null = Esperar-Servicio "Banco Austral" "http://localhost:8002/health" 40
+
 Paso "Levantando el backend (8000)"
 Abrir-Ventana "Velvet - Backend :8000" (Join-Path $Raiz "backend") "& '$Py' -m uvicorn api.main:app --port 8000 --reload"
 $okApi = Esperar-Servicio "Backend" "http://localhost:8000/health" 60
@@ -169,6 +176,7 @@ if (-not $SinApp) {
 Paso "Todo arriba"
 Write-Host "    App ........................ http://localhost:8081"
 Write-Host "    Panel del simulador ........ http://localhost:8001/panel"
+Write-Host "    Panel del Banco Austral .... http://localhost:8002/panel"
 Write-Host "    API (documentación) ........ http://localhost:8000/docs"
 Write-Host "    Clientes de prueba ......... http://localhost:8001/simulador/clientes"
 Write-Host ""

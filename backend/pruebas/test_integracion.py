@@ -56,14 +56,15 @@ def movimientos(api, cabeceras: dict) -> list:
 
 
 def ir_al_banco(api, efs, cabeceras, rut, clave, decision="autorizar",
-                retorno="http://localhost:8081/"):
+                retorno="http://localhost:8081/", institucion=None):
     """
     Hace de navegador: la app manda al banco, la persona entra y decide, y el
     banco la devuelve a la app. Devuelve los parámetros con que vuelve.
     """
     navegador = httpx.Client(follow_redirects=False)
     try:
-        r = api.post("/api/conexiones/iniciar", json={"retorno": retorno}, headers=cabeceras)
+        r = api.post("/api/conexiones/iniciar", headers=cabeceras,
+                     json={"retorno": retorno, **({"institucion": institucion} if institucion else {})})
         assert r.status_code == 200, r.text
         url = r.json()["urlAutorizacion"]
         assert url.startswith(efs + "/autorizar"), url
@@ -95,12 +96,13 @@ def ir_al_banco(api, efs, cabeceras, rut, clave, decision="autorizar",
         navegador.close()
 
 
-def vincular(api, efs, cabeceras, rut, clave):
+def vincular(api, efs, cabeceras, rut, clave, institucion=None):
     """Autoriza en el banco y después sincroniza, como hace la app."""
-    q = ir_al_banco(api, efs, cabeceras, rut, clave)
+    q = ir_al_banco(api, efs, cabeceras, rut, clave, institucion=institucion)
     if q.get("banco") != "vinculado":
         return q, None
-    return q, api.post("/api/conexiones", json={}, headers=cabeceras)
+    return q, api.post("/api/conexiones", headers=cabeceras,
+                       json={"institucion": institucion} if institucion else {})
 
 
 # ───────────────────── la clave nunca pasa por Velvet ─────────────────────
@@ -748,3 +750,110 @@ class TestCorrecciones:
         mio = self._gasto(api, usuario)
         assert api.post(f"/api/movimientos/{mio['id']}/duplicado", headers=usuario,
                         json={"duplicadoDe": ajeno["id"]}).status_code == 404
+
+
+# ──────────────── más de un banco a la vez (RF-07) ────────────────
+
+AUSTRAL = "Banco Austral"
+
+
+class TestVariosBancos:
+    """
+    Una persona con cuenta en dos bancos distintos del SFA. Lo que se prueba
+    es RF-07: cada conexión se sincroniza por separado, y la caída o el
+    permiso vencido de una no afecta a las demás.
+    """
+
+    @pytest.fixture
+    def camila(self, api, efs, efs_austral, base_limpia):
+        x = registrar(api, "Camila", "camila@prueba.cl")
+        _, r1 = vincular(api, efs, x, *CAMILA)
+        _, r2 = vincular(api, efs_austral, x, *CAMILA, institucion=AUSTRAL)
+        assert r1 is not None and r1.status_code == 200, "no quedó vinculado el primer banco"
+        assert r2 is not None and r2.status_code == 200, "no quedó vinculado el Banco Austral"
+        return x
+
+    @staticmethod
+    def _conexion(api, cabeceras, institucion):
+        return next(c for c in api.get("/api/conexiones", headers=cabeceras).json()["conexiones"]
+                    if c["institucion"] == institucion)
+
+    def test_los_dos_bancos_quedan_vinculados_con_sus_propias_cuentas(self, api, camila):
+        cuentas = {m["cuentaId"] for m in movimientos(api, camila)}
+        assert {"CTA-15432876-1", "AUS-15432876-1"} <= cuentas
+        por_banco = {m["institucion"] for m in movimientos(api, camila)}
+        assert por_banco == {"Banco Simulado SFA", AUSTRAL}
+        # El mismo cliente en los dos bancos, cada uno con su propio permiso.
+        for nombre in ("Banco Simulado SFA", AUSTRAL):
+            c = self._conexion(api, camila, nombre)
+            assert (c["estado"], c["rutCliente"], c["fuente"]) == ("al_dia", "15.432.876-9", "sfa")
+        inst = api.get("/api/instituciones", headers=camila).json()["instituciones"]
+        assert all(i["conectada"] for i in inst)
+
+    def test_sincronizar_trae_cada_banco_por_separado(self, api, camila):
+        r = api.post("/api/conexiones", json={}, headers=camila)
+        assert r.status_code == 200, r.text
+        assert [(b["institucion"], b["ok"]) for b in r.json()["bancos"]] == [
+            (AUSTRAL, True), ("Banco Simulado SFA", True)]
+
+    def test_si_un_banco_no_responde_el_otro_se_sincroniza_igual(self, api, camila, monkeypatch):
+        from dataclasses import replace
+
+        from ingesta import config
+
+        antes = movimientos(api, camila)
+        i = next(n for n, b in enumerate(config.BANCOS_SFA) if b.nombre == AUSTRAL)
+        caido = replace(config.BANCOS_SFA[i], base_url="http://localhost:9/accounts/v1")
+        monkeypatch.setattr(config, "BANCOS_SFA",
+                            config.BANCOS_SFA[:i] + [caido] + config.BANCOS_SFA[i + 1:])
+
+        r = api.post("/api/conexiones", json={}, headers=camila)
+        assert r.status_code == 200, r.text            # no es un error: uno sí respondió
+        bancos = {b["institucion"]: b for b in r.json()["bancos"]}
+        assert bancos["Banco Simulado SFA"]["ok"]
+        assert (bancos[AUSTRAL]["ok"], bancos[AUSTRAL]["codigo"]) == (False, "sin_respuesta")
+        # El que cayó se muestra como tal, con sus datos de la última vez.
+        assert self._conexion(api, camila, AUSTRAL)["estado"] == "sin_respuesta"
+        assert len(movimientos(api, camila)) == len(antes)
+
+        monkeypatch.undo()                               # el banco vuelve
+        assert api.post("/api/conexiones", json={}, headers=camila).status_code == 200
+        assert self._conexion(api, camila, AUSTRAL)["estado"] == "al_dia"
+
+    def test_un_permiso_vencido_en_un_banco_no_frena_al_otro(self, api, camila, url_base):
+        import psycopg
+
+        cx = self._conexion(api, camila, AUSTRAL)["id"]
+        with psycopg.connect(url_base) as conn:   # como si el permiso se hubiera perdido
+            conn.execute("UPDATE consentimiento SET alcance_rar = alcance_rar - 'refreshToken' "
+                         "WHERE conexion_id = %s", (cx,))
+        r = api.post("/api/conexiones", json={}, headers=camila).json()
+        bancos = {b["institucion"]: b for b in r["bancos"]}
+        assert bancos["Banco Simulado SFA"]["ok"]
+        assert bancos[AUSTRAL]["codigo"] == "reautorizar"
+        assert self._conexion(api, camila, AUSTRAL)["estado"] == "autorizacion_vencida"
+
+    def test_sincronizar_solo_un_banco(self, api, camila):
+        r = api.post("/api/conexiones", json={"institucion": AUSTRAL}, headers=camila)
+        assert r.status_code == 200
+        assert [b["institucion"] for b in r.json()["bancos"]] == [AUSTRAL]
+
+    def test_desvincular_un_banco_deja_el_otro(self, api, camila):
+        cx = self._conexion(api, camila, AUSTRAL)["id"]
+        assert api.delete(f"/api/conexiones/{cx}", headers=camila).status_code in (200, 204)
+        assert {m["institucion"] for m in movimientos(api, camila)} == {"Banco Simulado SFA"}
+        inst = {i["nombre"]: i["conectada"]
+                for i in api.get("/api/instituciones", headers=camila).json()["instituciones"]}
+        assert inst == {"Banco Simulado SFA": True, AUSTRAL: False}
+
+    def test_un_banco_que_no_existe(self, api, camila):
+        r = api.post("/api/conexiones/iniciar", headers=camila,
+                     json={"institucion": "Banco Inventado"})
+        assert r.status_code == 422
+        r = api.post("/api/conexiones", headers=camila, json={"institucion": "Banco Inventado"})
+        assert r.status_code == 422
+
+    def test_sin_bancos_vinculados_pide_autorizar(self, api, base_limpia):
+        x = registrar(api, "Nadie", "nadie@prueba.cl")
+        r = api.post("/api/conexiones", json={}, headers=x)
+        assert r.status_code == 409 and r.json()["detail"]["codigo"] == "reautorizar"

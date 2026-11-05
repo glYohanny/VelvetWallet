@@ -7,7 +7,9 @@ proveedor SFA, las credenciales del participante y las credenciales de las
 bases. Nada de esto está escrito a mano en el código de más adentro, para que
 pasar a producción sea cambiar variables de entorno, no reescribir la lógica.
 """
+import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 # Carga backend/.env si existe (python-dotenv). Si no está instalado o no hay
@@ -57,6 +59,42 @@ MONGO_URL = os.getenv(
 )
 MONGO_DB = os.getenv("MONGO_DB", "velvet_wallet")
 
+# ── Bancos participantes (RF-07: más de uno a la vez) ───────────────────────
+# Una persona tiene cuentas en varios bancos, y cada uno es un proveedor del
+# SFA distinto: su propia URL, su propia página de autorización y las
+# credenciales con que Velvet se registró en ESE banco. La conexión de cada
+# persona sabe a qué banco pertenece (por el nombre de la institución) y habla
+# solo con él.
+#
+# Por defecto, los dos bancos del simulador: el de siempre en el 8001 y el
+# Banco Austral en el 8002 (simulador/app/banco.py). Para otros bancos se pasa
+# la lista completa en SFA_BANCOS, como JSON:
+#   [{"nombre": "...", "base_url": ".../accounts/v1", "autorizar_url": ".../autorizar",
+#     "client_id": "...", "client_secret": "..."}]
+@dataclass(frozen=True)
+class BancoSFA:
+    nombre: str
+    base_url: str
+    autorizar_url: str
+    client_id: str
+    client_secret: str
+
+
+def _bancos() -> list[BancoSFA]:
+    texto = os.getenv("SFA_BANCOS", "").strip()
+    if texto:
+        return [BancoSFA(**b) for b in json.loads(texto)]
+    austral = os.getenv("SFA_AUSTRAL_URL", "http://localhost:8002")
+    return [
+        # El primero es el de siempre, con las variables de antes: una
+        # instalación que solo configuraba un banco sigue igual.
+        BancoSFA(INSTITUCION_NOMBRE, SFA_BASE_URL, SFA_AUTORIZAR_URL,
+                 SFA_CLIENT_ID, SFA_CLIENT_SECRET),
+        BancoSFA("Banco Austral", austral + "/accounts/v1", austral + "/autorizar",
+                 SFA_CLIENT_ID, SFA_CLIENT_SECRET),
+    ]
+
+
 # ── Identidad de demostración ───────────────────────────────────────────────
 # En producción el usuario, la institución y la conexión nacen del registro y
 # del flujo de consentimiento (OAuth). Para poder correr la ingesta sin esa
@@ -64,3 +102,12 @@ MONGO_DB = os.getenv("MONGO_DB", "velvet_wallet")
 USUARIO_EMAIL     = os.getenv("USUARIO_EMAIL", "demo@velvetwallet.cl")
 USUARIO_NOMBRE    = os.getenv("USUARIO_NOMBRE", "Usuario Demo")
 INSTITUCION_NOMBRE = os.getenv("INSTITUCION_NOMBRE", "Banco Simulado SFA")
+
+BANCOS_SFA: list[BancoSFA] = _bancos()
+
+
+def banco_sfa(nombre: str | None) -> BancoSFA | None:
+    """El banco participante con ese nombre (sin distinguir mayúsculas), o None."""
+    if not nombre:
+        return BANCOS_SFA[0]
+    return next((b for b in BANCOS_SFA if b.nombre.lower() == nombre.strip().lower()), None)

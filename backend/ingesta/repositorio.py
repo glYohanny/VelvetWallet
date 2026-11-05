@@ -554,7 +554,9 @@ class Repositorio:
 
     def marcar_sincronizacion(self, conexion_id: str):
         self.conn.execute(
-            "UPDATE conexion SET ultima_sincronizacion = now() WHERE id = %s",
+            # Respondió: si estaba marcada sin respuesta, deja de estarlo.
+            "UPDATE conexion SET ultima_sincronizacion = now(), "
+            "estado = CASE WHEN estado = 'error' THEN 'activa' ELSE estado END WHERE id = %s",
             (conexion_id,),
         )
 

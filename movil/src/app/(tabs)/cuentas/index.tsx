@@ -81,7 +81,17 @@ export default function Cuentas() {
   // Las instituciones salen del backend, que es el único que sabe qué permiso
   // está vigente y de cuándo es el dato. La vinculación y la desvinculación
   // viven en Inicio: aquí solo se muestra el estado.
-  const { conexiones, sincronizando } = useMovimientos();
+  const { conexiones, sincronizando, irAlBanco, completarVinculacion, desvincular } = useMovimientos();
+
+  /** Renovar el permiso de ESE banco. En web la página se va al banco y vuelve a Inicio. */
+  async function reautorizar(institucion: string) {
+    try {
+      const vuelta = await irAlBanco(institucion);
+      if (vuelta?.banco === "vinculado") await completarVinculacion();
+    } catch {
+      // El mensaje queda en el error del contexto.
+    }
+  }
 
   // "Conectada" es una institución con permiso por el SFA: el efectivo y las
   // cartolas se muestran en la lista, pero no son conexiones.
@@ -125,7 +135,12 @@ export default function Cuentas() {
       ) : (
         <View style={estilos.instituciones}>
           {conexiones.map((c) => (
-            <FilaConexion key={c.id} conexion={c} />
+            <FilaConexion
+              key={c.id}
+              conexion={c}
+              onReautorizar={(x) => reautorizar(x.institucion)}
+              onDesvincular={(x) => desvincular(x.id).catch(() => {})}
+            />
           ))}
         </View>
       )}

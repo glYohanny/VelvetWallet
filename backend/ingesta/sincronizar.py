@@ -56,8 +56,8 @@ class ConexionDeOtroCliente(Exception):
     """
 
 
-def _obtener_acceso(repo: Repositorio, banco: ClienteSFA, conexion_id: str,
-                    rut: str | None, clave: str | None,
+def _obtener_acceso(repo: Repositorio, banco: ClienteSFA, b: config.BancoSFA,
+                    conexion_id: str, rut: str | None, clave: str | None,
                     otorgado: dict | None = None) -> tuple[str, dict, dict]:
     """
     Consigue el token de acceso para la conexión y arma el alcance que se
@@ -80,7 +80,7 @@ def _obtener_acceso(repo: Repositorio, banco: ClienteSFA, conexion_id: str,
             banco._token = info["access_token"]
         else:
             consent_id, info = banco.obtener_acceso(
-                config.SFA_CLIENT_ID, config.SFA_CLIENT_SECRET, PERMISOS, rut, clave
+                b.client_id, b.client_secret, PERMISOS, rut, clave
             )
         cliente = info.get("cliente") or {}
         if rut_previo and cliente.get("rut") and not _mismo_rut(cliente["rut"], rut_previo):
@@ -97,7 +97,7 @@ def _obtener_acceso(repo: Repositorio, banco: ClienteSFA, conexion_id: str,
                 "Este banco todavía no está vinculado: autoriza el acceso en el "
                 "sitio de tu banco."
             )
-        info = banco.renovar_acceso(config.SFA_CLIENT_ID, config.SFA_CLIENT_SECRET, refresh)
+        info = banco.renovar_acceso(b.client_id, b.client_secret, refresh)
         consent_id = info.get("consentId") or previo.get("consentId")
         cliente = info.get("cliente") or {"rut": previo.get("rutCliente"),
                                           "nombre": previo.get("nombreCliente")}
@@ -105,7 +105,7 @@ def _obtener_acceso(repo: Repositorio, banco: ClienteSFA, conexion_id: str,
     alcance = {
         "permisos": PERMISOS,
         "consentId": consent_id,
-        "proveedor": config.INSTITUCION_NOMBRE,
+        "proveedor": b.nombre,
         # A qué cliente del banco corresponde esta conexión.
         "rutCliente": cliente.get("rut"),
         "nombreCliente": cliente.get("nombre"),
@@ -115,6 +115,17 @@ def _obtener_acceso(repo: Repositorio, banco: ClienteSFA, conexion_id: str,
         "refreshToken": refresh,
     }
     return consent_id, info, alcance
+
+
+class BancoDesconocido(Exception):
+    """Esa institución no es un banco participante con el que Velvet esté registrado."""
+
+
+def _banco(nombre: str | None) -> config.BancoSFA:
+    b = config.banco_sfa(nombre)
+    if b is None:
+        raise BancoDesconocido("%s no es un banco participante del SFA." % nombre)
+    return b
 
 
 def recalcular_recurrencias(repo: Repositorio, usuario_id: str) -> int:
@@ -163,8 +174,8 @@ def _mismo_rut(a: str, b: str) -> bool:
 
 
 def _sincronizar_conexion(repo: Repositorio, usuario_id: str, conexion_id: str,
-                          desde: str | None = None, rut: str | None = None,
-                          clave: str | None = None) -> dict:
+                          b: config.BancoSFA, desde: str | None = None,
+                          rut: str | None = None, clave: str | None = None) -> dict:
     """
     Núcleo de la sincronización para una conexión ya existente. Pide el
     consentimiento, trae del proveedor y deja todo en las dos bases. Confirma al
@@ -178,11 +189,11 @@ def _sincronizar_conexion(repo: Repositorio, usuario_id: str, conexion_id: str,
     # Para el detector de recurrencias: por comercio, cuántas veces y en cuántos
     # meses distintos aparece como cargo.
 
-    with ClienteSFA(config.SFA_BASE_URL) as banco:
+    with ClienteSFA(b.base_url) as banco:
         # 1. Seguridad: el cliente se identifica en su banco (o se renueva el
         #    acceso con el refresh token). El token queda atado a ESE cliente.
         consent_id, info_token, alcance = _obtener_acceso(
-            repo, banco, conexion_id, rut, clave
+            repo, banco, b, conexion_id, rut, clave
         )
 
         # 1a. Dejar registrado el consentimiento vigente en la base.
@@ -284,14 +295,13 @@ def vincular_conexion(usuario_id: str, otorgado: dict,
     Rechaza (ConexionDeOtroCliente) si la conexión ya estaba atada a otro
     cliente del banco.
     """
+    b = _banco(institucion_nombre)
     repo = Repositorio()
     try:
-        conexion_id = conexion_de_usuario(
-            repo.conn, usuario_id, institucion_nombre or config.INSTITUCION_NOMBRE
-        )
-        with ClienteSFA(config.SFA_BASE_URL) as banco:
+        conexion_id = conexion_de_usuario(repo.conn, usuario_id, b.nombre)
+        with ClienteSFA(b.base_url) as banco:
             consent_id, info, alcance = _obtener_acceso(
-                repo, banco, conexion_id, None, None, otorgado
+                repo, banco, b, conexion_id, None, None, otorgado
             )
         expira = datetime.now(timezone.utc) + timedelta(seconds=info.get("expires_in", 0))
         repo.registrar_consentimiento(conexion_id, alcance, expira)
@@ -312,14 +322,70 @@ def sincronizar_usuario(usuario_id: str, institucion_nombre: str | None = None,
     Si algo falla antes del commit final, no queda nada a medias: la conexión
     recién creada y lo leído se descartan (la transacción no se confirma).
     """
+    b = _banco(institucion_nombre)
     repo = Repositorio()
     try:
-        conexion_id = conexion_de_usuario(
-            repo.conn, usuario_id, institucion_nombre or config.INSTITUCION_NOMBRE
-        )
-        return _sincronizar_conexion(repo, usuario_id, conexion_id, desde, rut, clave)
+        conexion_id = conexion_de_usuario(repo.conn, usuario_id, b.nombre)
+        return _sincronizar_conexion(repo, usuario_id, conexion_id, b, desde, rut, clave)
     finally:
         repo.close()
+
+
+def bancos_conectados(usuario_id: str) -> list[str]:
+    """Los bancos del SFA que la persona tiene vinculados, por nombre."""
+    repo = Repositorio()
+    try:
+        filas = repo.conn.execute(
+            """SELECT i.nombre FROM conexion cx JOIN institucion i ON i.id = cx.institucion_id
+               WHERE cx.usuario_id = %s AND i.participante_sfa ORDER BY i.nombre""",
+            (usuario_id,)).fetchall()
+        return [f[0] for f in filas if config.banco_sfa(f[0]) is not None]
+    finally:
+        repo.close()
+
+
+def _marcar_estado(usuario_id: str, institucion: str, estado: str) -> None:
+    repo = Repositorio()
+    try:
+        repo.conn.execute(
+            """UPDATE conexion cx SET estado = %s FROM institucion i
+               WHERE i.id = cx.institucion_id AND cx.usuario_id = %s AND i.nombre = %s""",
+            (estado, usuario_id, institucion))
+        repo.commit()
+    finally:
+        repo.close()
+
+
+def sincronizar_todos(usuario_id: str) -> list[dict]:
+    """
+    Sincroniza cada banco vinculado de la persona POR SEPARADO (RF-07).
+
+    Cada banco corre en su propia transacción: si uno no responde, lo que se
+    trajo de los demás queda guardado igual, y ese banco queda marcado como
+    "sin respuesta" (la app muestra sus datos de la última vez y lo dice). Un
+    permiso vencido tampoco frena a los demás: se informa para que la persona
+    lo renueve en ese banco.
+
+    Devuelve un resultado por banco: {"institucion", "ok", "resumen" | "codigo",
+    "mensaje"}.
+    """
+    resultados = []
+    for nombre in bancos_conectados(usuario_id):
+        try:
+            resumen = sincronizar_usuario(usuario_id, nombre)
+            resultados.append({"institucion": nombre, "ok": True, "resumen": resumen})
+        except ReautorizacionRequerida as e:
+            resultados.append({"institucion": nombre, "ok": False, "codigo": "reautorizar",
+                               "mensaje": str(e)})
+        except ConexionDeOtroCliente as e:
+            resultados.append({"institucion": nombre, "ok": False, "codigo": "otro_cliente",
+                               "mensaje": str(e)})
+        except Exception as e:  # noqa: BLE001 — un banco caído no frena a los otros
+            _marcar_estado(usuario_id, nombre, "error")
+            resultados.append({"institucion": nombre, "ok": False, "codigo": "sin_respuesta",
+                               "mensaje": "%s no respondió. Se muestran sus datos de la última "
+                                          "vez. (%s)" % (nombre, type(e).__name__)})
+    return resultados
 
 
 def sincronizar(desde: str | None = None) -> dict:
@@ -327,7 +393,7 @@ def sincronizar(desde: str | None = None) -> dict:
     repo = Repositorio()
     try:
         usuario_id, conexion_id = asegurar_identidad(repo.conn)
-        return _sincronizar_conexion(repo, usuario_id, conexion_id, desde,
+        return _sincronizar_conexion(repo, usuario_id, conexion_id, config.BANCOS_SFA[0], desde,
                                      config.SFA_RUT_DEMO, config.SFA_CLAVE_DEMO)
     finally:
         repo.close()

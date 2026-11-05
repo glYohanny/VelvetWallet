@@ -75,6 +75,27 @@ acceso en las sincronizaciones siguientes **sin volver a pedir la clave**.
 Si una autorización llega sin RUT (versiones anteriores del backend), se atribuye al cliente por
 defecto (Jossue). Para exigir siempre el RUT: `SFA_CLIENTE_POR_DEFECTO=""`.
 
+## Dos bancos a la vez
+
+`SFA_BANCO` elige qué banco es esta EFS (`app/banco.py`). Sin la variable es el de siempre.
+
+```bash
+uvicorn app.main:app --port 8001                      # Banco Simulado SFA
+SFA_BANCO=austral uvicorn app.main:app --port 8002    # Banco Austral
+```
+
+Son bancos distintos de verdad, no el mismo con dos nombres: otras cuentas, otros movimientos y su
+propio archivo de permisos (`refresh_tokens_austral.json`), para que dos procesos no se pisen.
+
+| Cliente del Banco Austral | RUT | Clave | Qué tiene |
+|---|---|---|---|
+| Camila Rojas | 15.432.876-9 | 2468 | La tarjeta: compras, Amazon Prime, iCloud y lo que se transfiere desde su cuenta sueldo |
+| Diego Muñoz | 21.004.567-8 | 1357 | Lo mismo, con sus gastos |
+| Valentina Soto | 17.654.321-3 | 8642 | Solo es clienta de este banco: perfil profesional completo |
+
+Camila y Diego tienen la misma clave en los dos bancos para que la demo sea simple; en la vida real
+cada banco tiene la suya.
+
 ## Autorización en el sitio del banco (OAuth 2.0 + PAR + PKCE)
 
 El RUT y la clave del usuario **no pasan por Velvet**. Como en el SFA real, el usuario los escribe en

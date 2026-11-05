@@ -121,6 +121,19 @@ Si la base se creó con un esquema anterior (sin `transaccion.categoria_origen`,
 `usuario.sueldo_declarado` numérico), el backend la pone al día solo la primera vez que se conecta
 (`ingesta/esquema.py`, idempotente).
 
+## Varios bancos a la vez (RF-07)
+
+Cada conexión pertenece a un banco participante y habla solo con él: su URL, su página de
+autorización y las credenciales de Velvet en ese banco. Por defecto son los dos bancos del simulador
+(8001 y 8002); para otros, se pasa la lista en `SFA_BANCOS` (ver `ingesta/config.py`).
+
+- `GET /api/instituciones`: los bancos a los que se puede conectar y cuáles ya están vinculados.
+- `POST /api/conexiones/iniciar` con `institucion`: autorizar en ESE banco.
+- `POST /api/conexiones` sin `institucion` sincroniza **todos los bancos vinculados, cada uno en su
+  propia transacción** (`sincronizar_todos`). Si uno no responde, se marca *sin respuesta*, se siguen
+  mostrando sus datos de la última vez y los demás se guardan igual. Un permiso vencido en un banco
+  tampoco frena a los otros. La respuesta lo dice banco por banco en `bancos`.
+
 ## Tres fuentes, un solo ledger (OE-1)
 
 Los movimientos entran por la API del SFA, por cartola CSV o anotados a mano, y terminan en el

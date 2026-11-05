@@ -6,6 +6,7 @@
  * permiso vigente no garantiza que lo que se muestra esté actualizado, y RF-35
  * pide decirlo en vez de presentar un total como si estuviera completo.
  */
+import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { Tocable } from "@/components/Movimiento";
@@ -55,11 +56,16 @@ function describirEstado(c: Conexion): { color: string; texto: string } {
 type Props = {
   conexion: Conexion;
   onReautorizar?: (c: Conexion) => void;
+  /** Solo para bancos del SFA: retira el permiso y borra sus datos de Velvet. */
+  onDesvincular?: (c: Conexion) => Promise<void> | void;
 };
 
-export function FilaConexion({ conexion, onReautorizar }: Props) {
+export function FilaConexion({ conexion, onReautorizar, onDesvincular }: Props) {
   const estado = describirEstado(conexion);
-  const necesitaAccion = conexion.estado === "autorizacion_vencida";
+  const esDelSfa = (conexion.fuente ?? "sfa") === "sfa";
+  const necesitaAccion = esDelSfa && conexion.estado === "autorizacion_vencida";
+  const [confirmar, setConfirmar] = useState(false);
+  const [quitando, setQuitando] = useState(false);
 
   return (
     <View style={estilos.fila}>
@@ -88,6 +94,39 @@ export function FilaConexion({ conexion, onReautorizar }: Props) {
           </Text>
         </View>
       ))}
+
+      {esDelSfa && onDesvincular ? (
+        confirmar ? (
+          <View style={estilos.confirmar}>
+            <Text style={estilos.confirmarTexto}>
+              Se revoca el permiso en {conexion.institucion} y se borran de Velvet sus cuentas y
+              movimientos. Tus otros bancos no se tocan.
+            </Text>
+            <View style={estilos.confirmarAcciones}>
+              <Text style={estilos.enlaceApagado} onPress={() => setConfirmar(false)}>Cancelar</Text>
+              <Text
+                style={estilos.enlacePeligro}
+                onPress={async () => {
+                  if (quitando) return;
+                  setQuitando(true);
+                  try {
+                    await onDesvincular(conexion);
+                  } finally {
+                    setQuitando(false);
+                    setConfirmar(false);
+                  }
+                }}
+              >
+                {quitando ? "Desvinculando…" : "Sí, desvincular"}
+              </Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={estilos.desvincular} onPress={() => setConfirmar(true)}>
+            Desvincular
+          </Text>
+        )
+      ) : null}
     </View>
   );
 }
@@ -123,4 +162,16 @@ const estilos = StyleSheet.create({
     marginLeft: espacio.m,
   },
   botonTexto: { color: "#FFFFFF", fontFamily: fuente.textoFuerte, fontSize: 14 },
+  desvincular: {
+    color: colores.texto2,
+    fontFamily: fuente.textoMedio,
+    fontSize: 13,
+    marginLeft: 8 + espacio.m,
+    marginTop: espacio.s,
+  },
+  confirmar: { marginLeft: 8 + espacio.m, marginTop: espacio.s, gap: espacio.s },
+  confirmarTexto: { color: colores.texto2, fontFamily: fuente.texto, fontSize: 13, lineHeight: 18 },
+  confirmarAcciones: { flexDirection: "row", gap: espacio.l },
+  enlaceApagado: { color: colores.texto2, fontFamily: fuente.textoMedio, fontSize: 14 },
+  enlacePeligro: { color: colores.alerta, fontFamily: fuente.textoFuerte, fontSize: 14 },
 });

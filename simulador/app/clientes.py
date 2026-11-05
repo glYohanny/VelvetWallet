@@ -95,13 +95,15 @@ PERFILES = {
         "pendientes": 2,
     },
 
-    # Cuenta en un segundo banco: el sueldo llega al otro, así que aquí solo
-    # hay compras con la tarjeta y un par de suscripciones. Es lo que tiene
-    # mucha gente: la cuenta sueldo en un banco y la tarjeta en otro.
+    # Cuenta en un segundo banco: el sueldo llega al otro, y la persona se
+    # transfiere a sí misma lo que gasta con la tarjeta de este. Es lo que
+    # tiene mucha gente: la cuenta sueldo en un banco y la tarjeta en otro.
+    # La glosa dice "transferencia" a propósito: no es un ingreso nuevo, y
+    # tanto la app como el detector de sueldo la dejan fuera por eso.
     "secundario": {
-        "sueldo": 0,
-        "dia_sueldo": 30,
-        "glosa_sueldo": "",
+        "sueldo": 240_000,
+        "dia_sueldo": 1,
+        "glosa_sueldo": "Transferencia entre cuentas propias",
         "arriendo": None,
         "suscripciones": [
             ("Amazon Prime", 6_990, 8, "Entretenimiento"),

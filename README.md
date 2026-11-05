@@ -81,6 +81,17 @@ uvicorn app.main:app --reload --port 8001
 Documentación interactiva en `http://localhost:8001/docs`. Detalles en
 [`simulador/README.md`](simulador/README.md).
 
+Para probar **más de un banco a la vez**, se levanta además el segundo banco, en otra terminal:
+
+```bash
+cd simulador
+SFA_BANCO=austral uvicorn app.main:app --reload --port 8002
+# PowerShell:  $env:SFA_BANCO="austral"; uvicorn app.main:app --reload --port 8002
+```
+
+Es otro banco de verdad (Banco Austral), con otras cuentas y otros movimientos. La app lo ofrece al
+tocar **Conectar otro** en Inicio.
+
 ### Aplicación móvil
 
 ```bash

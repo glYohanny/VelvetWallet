@@ -113,7 +113,37 @@ export type ResultadoConexion = {
   cuentas: number;
   movimientosNuevos: number;
   movimientosActualizados: number;
+  /**
+   * Banco por banco (RF-07). Cada uno se sincroniza por separado: si uno no
+   * respondió o su permiso venció, los demás llegan igual.
+   */
+  bancos?: ResultadoBanco[];
 };
+
+export type ResultadoBanco = {
+  institucion: string;
+  ok: boolean;
+  movimientosNuevos?: number;
+  movimientosActualizados?: number;
+  /** Cuando no resultó: "sin_respuesta" (el banco no contestó) o "reautorizar". */
+  codigo?: "sin_respuesta" | "reautorizar" | "otro_cliente";
+  mensaje?: string;
+};
+
+/** Un banco del SFA al que Velvet se puede conectar. */
+export type Institucion = { nombre: string; conectada: boolean };
+
+export async function obtenerInstituciones(): Promise<Institucion[]> {
+  const token = await tokenActual();
+  if (!token) return [];
+  try {
+    const r = await fetch(`${API}/api/instituciones`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) return [];
+    return ((await r.json()) as { instituciones: Institucion[] }).instituciones;
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Empieza la vinculación: el backend deja la solicitud en el banco (PAR + PKCE)
@@ -124,7 +154,7 @@ export type ResultadoConexion = {
  * banco vuelve al backend, y el backend redirige ahí con `?banco=vinculado`,
  * `?banco=rechazado` o `?banco=error&motivo=...`.
  */
-export async function iniciarVinculacion(retorno: string): Promise<string> {
+export async function iniciarVinculacion(retorno: string, institucion?: string): Promise<string> {
   const token = await tokenActual();
   if (!token) {
     throw new ErrorSincronizacion("Tu sesión no está activa. Inicia sesión de nuevo.");
@@ -134,7 +164,7 @@ export async function iniciarVinculacion(retorno: string): Promise<string> {
     respuesta = await fetch(`${API}/api/conexiones/iniciar`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ retorno }),
+      body: JSON.stringify({ retorno, ...(institucion ? { institucion } : {}) }),
     });
   } catch {
     throw new ErrorSincronizacion(
@@ -148,12 +178,13 @@ export async function iniciarVinculacion(retorno: string): Promise<string> {
 }
 
 /**
- * Trae (o vuelve a traer) los datos del banco ya autorizado, con el permiso
- * guardado. Si todavía no hay permiso, falla con codigo "reautorizar".
+ * Trae (o vuelve a traer) los datos de los bancos ya autorizados, con el
+ * permiso guardado de cada uno. Falla con codigo "reautorizar" solo si no hay
+ * ningún banco que responda; si responde alguno, el detalle viene en `bancos`.
  *
  * Puede tardar unos segundos (baja el historial).
  */
-export async function conectarBanco(): Promise<ResultadoConexion> {
+export async function conectarBanco(institucion?: string): Promise<ResultadoConexion> {
   const token = await tokenActual();
   if (!token) {
     throw new ErrorSincronizacion("Tu sesión no está activa. Inicia sesión de nuevo.");
@@ -164,7 +195,8 @@ export async function conectarBanco(): Promise<ResultadoConexion> {
     respuesta = await fetch(`${API}/api/conexiones`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({}),
+      // Sin institución, el backend sincroniza TODOS los bancos vinculados.
+      body: JSON.stringify(institucion ? { institucion } : {}),
     });
   } catch {
     throw new ErrorSincronizacion(

@@ -99,6 +99,16 @@ def efs() -> str:
 
 
 @pytest.fixture(scope="session")
+def efs_austral() -> str:
+    """El segundo banco del simulador (SFA_BANCO=austral, puerto 8002)."""
+    url = os.getenv("SFA_AUSTRAL_URL", "http://localhost:8002")
+    if not _responde(url):
+        pytest.skip(f"El Banco Austral no está arriba en {url} "
+                    "(SFA_BANCO=austral uvicorn app.main:app --port 8002)")
+    return url
+
+
+@pytest.fixture(scope="session")
 def api(url_base):
     """
     Cliente HTTP contra la API real, apuntando a la base de pruebas.

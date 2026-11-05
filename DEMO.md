@@ -100,6 +100,22 @@ En `POST /simulador/nuevo-pago` hay dos casillas:
   mostrar que el sistema **se abstiene en vez de inventar** una categoría.
 - **`pendiente`** → el pago llega pre-autorizado y se confirma después con `/avanzar`.
 
+### Dos bancos a la vez (RF-07)
+
+Con el segundo banco levantado (`SFA_BANCO=austral`, puerto 8002; `iniciar.cmd` ya lo levanta):
+
+| Paso | Dónde | Qué hacer | Qué se ve en la app |
+|---|---|---|---|
+| 1 | App, Inicio | **Conectar otro** → **Ir a Banco Austral** | El sitio del Banco Austral |
+| 2 | Sitio del banco | Camila: `15.432.876-9` · `2468` → **Autorizar** | "2 bancos vinculados" |
+| 3 | App, Cuentas | Mirar Instituciones | Los dos bancos, cada uno con sus cuentas |
+| 4 | Terminal del 8002 | **Ctrl+C** (el banco se cae) | — |
+| 5 | App, Inicio | **Sincronizar** | "Banco Austral no respondió: se muestran sus datos de la última vez" |
+| 6 | App, Cuentas | Mirar Instituciones | Austral en rojo, *No responde*; el otro sigue *Al día* |
+
+**El punto clave es el paso 5:** un banco caído no frena al otro. Cada conexión se sincroniza por
+separado, y los datos del que no respondió se siguen mostrando, marcados como de la última vez.
+
 ---
 
 ## 5. Si algo falla
