@@ -13,6 +13,7 @@ un usuario y una institución.
 """
 from __future__ import annotations
 
+import bcrypt
 import psycopg
 
 from . import config
@@ -69,22 +70,35 @@ def conexion_de_usuario(conn: psycopg.Connection, usuario_id: str,
     return asegurar_conexion(conn, usuario_id, institucion_id)
 
 
+def asegurar_usuario_demo(conn: psycopg.Connection) -> str:
+    """
+    La cuenta de prueba que muestra la pantalla de inicio de sesión, con su
+    contraseña de verdad (hash bcrypt), para que se pueda entrar con ella.
+
+    Si existe con un hash que no es bcrypt (versiones anteriores la creaban
+    con un marcador, "demo-no-usar", con el que no se podía entrar), se
+    repara. Si la persona ya le cambió la contraseña, no se toca.
+    """
+    fila = conn.execute(
+        "SELECT id, hash_password FROM usuario WHERE email = %s", (config.USUARIO_EMAIL,)
+    ).fetchone()
+    hash_demo = bcrypt.hashpw(config.USUARIO_CLAVE.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    if fila is None:
+        return conn.execute(
+            """INSERT INTO usuario (email, nombre, hash_password)
+               VALUES (%s, %s, %s) RETURNING id""",
+            (config.USUARIO_EMAIL, config.USUARIO_NOMBRE, hash_demo),
+        ).fetchone()[0]
+    if not str(fila[1]).startswith("$2"):
+        conn.execute("UPDATE usuario SET hash_password = %s WHERE id = %s", (hash_demo, fila[0]))
+    return fila[0]
+
+
 def asegurar_identidad(conn: psycopg.Connection) -> tuple[str, str]:
     """
     Demo por línea de comandos: crea/usa un usuario de demostración y su
     conexión. Devuelve (usuario_id, conexion_id).
     """
-    fila = conn.execute(
-        "SELECT id FROM usuario WHERE email = %s", (config.USUARIO_EMAIL,)
-    ).fetchone()
-    if fila:
-        usuario_id = fila[0]
-    else:
-        usuario_id = conn.execute(
-            """INSERT INTO usuario (email, nombre, hash_password)
-               VALUES (%s, %s, %s) RETURNING id""",
-            (config.USUARIO_EMAIL, config.USUARIO_NOMBRE, "demo-no-usar"),
-        ).fetchone()[0]
-
+    usuario_id = asegurar_usuario_demo(conn)
     conexion_id = conexion_de_usuario(conn, usuario_id, config.INSTITUCION_NOMBRE)
     return usuario_id, conexion_id

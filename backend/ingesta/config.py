@@ -101,6 +101,9 @@ def _bancos() -> list[BancoSFA]:
 # parte todavía, se siembran de forma idempotente (ver bootstrap.py).
 USUARIO_EMAIL     = os.getenv("USUARIO_EMAIL", "demo@velvetwallet.cl")
 USUARIO_NOMBRE    = os.getenv("USUARIO_NOMBRE", "Usuario Demo")
+# La contraseña de la cuenta de prueba que muestra la pantalla de inicio de
+# sesión de la app. Es pública a propósito: es para demostrar, no protege nada.
+USUARIO_CLAVE     = os.getenv("USUARIO_CLAVE", "velvet2026")
 INSTITUCION_NOMBRE = os.getenv("INSTITUCION_NOMBRE", "Banco Simulado SFA")
 
 BANCOS_SFA: list[BancoSFA] = _bancos()

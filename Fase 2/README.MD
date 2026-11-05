@@ -33,11 +33,12 @@ la evidencia principal:
 |---|---|
 | `simulador/` | Proveedor de información del SFA conforme al Anexo N°3 de la NCG N°514, con su OpenAPI |
 | `backend/ingesta/` | Pipeline de ingesta, normalización y deduplicación hacia el modelo canónico |
-| `backend/motor/` | Motor de proyección Monte Carlo |
-| `backend/pruebas/` | 21 pruebas unitarias del motor (`python -m pytest`) |
+| `backend/motor/` | Motores de proyección Monte Carlo, flujo de caja, recurrencias, sueldo y plazos de brechas |
+| `backend/pruebas/` | 224 pruebas del backend, unitarias y de integración (`python -m pytest`) |
 | `backend/api/` | API del backend: autenticación, datos, conexiones, metas y privacidad |
 | `BD/` | Esquema de PostgreSQL y MongoDB, con el entorno reproducible en Docker Compose |
 | `movil/` | Aplicación móvil en React Native + Expo |
-| `movil/src/utils/__tests__/` | 84 pruebas de la aplicación (`npx jest`) |
+| `movil/src/utils/__tests__/` | 129 pruebas de la aplicación (`npx jest`) |
+| `TRAZABILIDAD.md` | Matriz de trazabilidad: cada requisito funcional con su código, sus pruebas y su estado |
 
 El historial de commits documenta el aporte individual de cada integrante.

@@ -440,6 +440,24 @@ def _cartola(filas: list[tuple[str, str, int]]) -> str:
     return "\n".join(lineas) + "\n"
 
 
+def _inequivocos(todos: list, cuenta_externa: str) -> list:
+    """
+    Movimientos de la cuenta de antes de ayer cuyo monto no se repite en esa
+    cuenta a menos de una semana: los que solo pueden emparejarse con ellos mismos.
+    """
+    from datetime import date, timedelta
+
+    def dia(m):
+        return date.fromisoformat(m["fecha"][:10])
+
+    propios = [m for m in todos if m["cuentaId"] == cuenta_externa]
+    limite = date.today() - timedelta(days=2)
+    return [m for m in propios
+            if dia(m) <= limite and not any(
+                o is not m and o["monto"] == m["monto"] and abs((dia(o) - dia(m)).days) <= 7
+                for o in propios)]
+
+
 class TestCartolasYCargaManual:
     @pytest.fixture
     def usuario(self, api, efs, base_limpia):
@@ -487,10 +505,14 @@ class TestCartolasYCargaManual:
                                                                  "2026-10-03")
 
     def test_historial_de_un_banco_conectado_se_fusiona_con_la_api(self, api, usuario):
+        from datetime import date, timedelta
+
         todos = movimientos(api, usuario)
         cuenta = api.get("/api/cuentas", headers=usuario).json()["cuentas"][0]
-        de_la_cuenta = [m for m in todos if m["cuentaId"] == cuenta["idExterno"]][:3]
-        from datetime import date, timedelta
+        # Movimientos de antes de ayer, para que su fecha contable (un día
+        # después) no caiga en el futuro, y con un monto que no se repite en
+        # la semana, para que el emparejamiento esperado sea inequívoco.
+        de_la_cuenta = _inequivocos(todos, cuenta["idExterno"])[:3]
 
         def un_dia_despues(m):   # la fecha contable de la cartola
             return (date.fromisoformat(m["fecha"][:10]) + timedelta(days=1)).strftime("%d/%m/%Y")
@@ -515,7 +537,7 @@ class TestCartolasYCargaManual:
 
         todos = movimientos(api, usuario)
         cuenta = api.get("/api/cuentas", headers=usuario).json()["cuentas"][0]
-        m = next(x for x in todos if x["cuentaId"] == cuenta["idExterno"] and x["monto"] < 0)
+        m = next(x for x in _inequivocos(todos, cuenta["idExterno"]) if x["monto"] < 0)
         # Como si ese movimiento solo hubiera llegado por cartola (historial
         # importado antes de que la API lo trajera).
         with psycopg.connect(url_base) as conn:
@@ -857,3 +879,185 @@ class TestVariosBancos:
         x = registrar(api, "Nadie", "nadie@prueba.cl")
         r = api.post("/api/conexiones", json={}, headers=x)
         assert r.status_code == 409 and r.json()["detail"]["codigo"] == "reautorizar"
+
+
+# ───────── requisitos que estaban implementados pero sin prueba propia ─────────
+
+class TestSesion:
+    """RF-33: registrarse, iniciar sesión y que sin sesión no se vea nada."""
+
+    def test_registro_e_inicio_de_sesion(self, api, base_limpia):
+        r = api.post("/api/auth/registro",
+                     json={"nombre": "Ana", "email": "Ana@Prueba.cl", "password": CLAVE_VELVET})
+        assert r.status_code in (200, 201)
+        assert r.json()["usuario"]["email"] == "ana@prueba.cl"     # el correo se normaliza
+        assert "password" not in r.text and "hash" not in r.text
+        r = api.post("/api/auth/sesion", json={"email": "ana@prueba.cl", "password": CLAVE_VELVET})
+        assert r.status_code == 200 and r.json()["token"]
+
+    def test_no_se_repite_el_correo_ni_se_aceptan_claves_cortas(self, api, base_limpia):
+        registrar(api, "Ana", "ana@prueba.cl")
+        assert api.post("/api/auth/registro", json={
+            "nombre": "Otra", "email": "ANA@prueba.cl", "password": CLAVE_VELVET}).status_code == 409
+        assert api.post("/api/auth/registro", json={
+            "nombre": "Beto", "email": "beto@prueba.cl", "password": "corta"}).status_code == 400
+
+    def test_el_error_no_revela_si_el_correo_existe(self, api, base_limpia):
+        registrar(api, "Ana", "ana@prueba.cl")
+        mala_clave = api.post("/api/auth/sesion", json={"email": "ana@prueba.cl", "password": "x" * 9})
+        no_existe = api.post("/api/auth/sesion", json={"email": "nadie@prueba.cl", "password": "x" * 9})
+        assert mala_clave.status_code == no_existe.status_code == 401
+        assert mala_clave.json() == no_existe.json()
+
+    def test_sin_sesion_no_hay_datos(self, api, base_limpia):
+        assert api.get("/api/movimientos").status_code == 401
+        assert api.get("/api/movimientos",
+                       headers={"Authorization": "Bearer inventado"}).status_code == 401
+
+
+class TestOperacionesDeCreditoYPaginacion:
+    """RF-05: las dos APIs de información del estándar, con su paginación."""
+
+    @pytest.fixture
+    def camila(self, api, efs, base_limpia):
+        x = registrar(api, "Camila", "camila@prueba.cl")
+        _, r = vincular(api, efs, x, *CAMILA)
+        assert r is not None and r.status_code == 200
+        return x
+
+    def test_llegan_los_creditos(self, api, camila):
+        creditos = api.get("/api/creditos", headers=camila).json()["creditos"]
+        assert {c["tipo"] for c in creditos} == {"Hipotecario", "Automotriz"}
+        assert all(c["cuotaMensual"] and c["institucion"] == "Banco Simulado SFA" for c in creditos)
+
+    def test_se_recorren_todas_las_paginas(self, api, camila):
+        # El cliente pide de a 100: la cuenta principal de Camila tiene más de
+        # 300 movimientos, así que solo llegan todos si se recorren las páginas.
+        principal = [m for m in movimientos(api, camila) if m["cuentaId"] == "CTA-15432876-1"]
+        assert len(principal) > 300
+
+
+class TestPendienteAConfirmada:
+    """
+    RF-11: una compra que llega pre-autorizada y después se confirma por otro
+    monto, con el mismo transactionID, se actualiza y no se duplica.
+
+    Usa un cliente propio del simulador, creado para la prueba y borrado al
+    final: agregar compras a los clientes de base cambiaría los datos que
+    usan las otras pruebas (el simulador guarda las compras en memoria).
+    """
+
+    RUT, CLAVE = "19.876.543-0", "9753"
+
+    @pytest.fixture
+    def cliente(self, efs):
+        httpx.delete(f"{efs}/simulador/clientes/{self.RUT}")   # por si quedó de una corrida cortada
+        r = httpx.post(f"{efs}/simulador/clientes", json={
+            "rut": self.RUT, "nombre": "Prueba Pendiente", "clave": self.CLAVE,
+            "perfil": "estudiante", "meses": 2})
+        assert r.status_code == 201, r.text
+        yield self.RUT, self.CLAVE
+        httpx.delete(f"{efs}/simulador/clientes/{self.RUT}")
+
+    def test_se_actualiza_sin_duplicar(self, api, efs, base_limpia, cliente):
+        x = registrar(api, "Prueba", "pendiente@prueba.cl")
+        _, r = vincular(api, efs, x, *cliente)
+        assert r is not None and r.status_code == 200
+        assert httpx.post(efs + "/simulador/nuevo", params={
+            "rut": self.RUT, "comercio": "Ripley", "monto": 45990, "pendiente": "true"}).status_code == 200
+        llego = api.post("/api/conexiones", json={}, headers=x).json()
+        assert llego["movimientosNuevos"] == 1
+        antes = movimientos(api, x)
+        compra = next(m for m in antes if m["monto"] == -45990 and m["comercio"] == "Ripley")
+
+        assert httpx.post(efs + "/simulador/avanzar", params={"rut": self.RUT}).status_code == 200
+        r = api.post("/api/conexiones", json={}, headers=x).json()
+        assert r["movimientosNuevos"] == 0 and r["movimientosActualizados"] >= 1
+        despues = movimientos(api, x)
+        assert len(despues) == len(antes)                     # no se duplicó
+        confirmada = next(m for m in despues if m["id"] == compra["id"])
+        assert confirmada["monto"] < compra["monto"]          # el monto definitivo es mayor
+
+
+class TestConfirmarSuscripciones:
+    """RF-22: la persona confirma o descarta cada suscripción, y eso se respeta."""
+
+    def test_la_decision_sobrevive_a_la_sincronizacion(self, api, efs, base_limpia):
+        x = registrar(api, "Camila", "camila@prueba.cl")
+        vincular(api, efs, x, *CAMILA)
+        s = api.get("/api/suscripciones", headers=x).json()["suscripciones"]
+        uno, otro = s[0]["id"], s[1]["id"]
+        assert api.patch(f"/api/suscripciones/{uno}", json={"estado": "confirmada"},
+                         headers=x).status_code == 200
+        assert api.patch(f"/api/suscripciones/{otro}", json={"estado": "descartada"},
+                         headers=x).status_code == 200
+        assert api.patch(f"/api/suscripciones/{otro}", json={"estado": "detectada"},
+                         headers=x).status_code == 422
+
+        api.post("/api/conexiones", json={}, headers=x)       # el detector vuelve a correr
+        estados = {i["id"]: i["estado"] for i in
+                   api.get("/api/suscripciones", headers=x).json()["suscripciones"]}
+        assert (estados[uno], estados[otro]) == ("confirmada", "descartada")
+
+    def test_no_se_decide_por_otro(self, api, efs, base_limpia):
+        x = registrar(api, "Camila", "camila@prueba.cl")
+        vincular(api, efs, x, *CAMILA)
+        ajena = api.get("/api/suscripciones", headers=x).json()["suscripciones"][0]["id"]
+        y = registrar(api, "Otro", "otro@prueba.cl")
+        assert api.patch(f"/api/suscripciones/{ajena}", json={"estado": "descartada"},
+                         headers=y).status_code == 404
+
+
+class TestAvisoDeBrechas:
+    """RF-32: una brecha registrada le llega a quien afecta, con su plazo de 72 horas."""
+
+    def test_el_afectado_ve_el_aviso_y_el_plazo(self, api, base_limpia, url_base):
+        import psycopg
+
+        x = registrar(api, "Ana", "ana@prueba.cl")
+        y = registrar(api, "Beto", "beto@prueba.cl")
+        with psycopg.connect(url_base) as conn:
+            uid = conn.execute("SELECT id FROM usuario WHERE email = 'ana@prueba.cl'").fetchone()[0]
+            inc = conn.execute(
+                """INSERT INTO incidente_seguridad (titulo, descripcion, datos_afectados, gravedad,
+                                                    detectado_at, estado, notificado_at)
+                   VALUES ('Acceso indebido', 'Prueba', 'Correo', 'alta',
+                           now() - interval '10 hours', 'notificado', now()) RETURNING id""",
+            ).fetchone()[0]
+            conn.execute("INSERT INTO incidente_afectado (incidente_id, usuario_id) VALUES (%s, %s)",
+                         (inc, uid))
+
+        r = api.get("/api/incidentes", headers=x).json()
+        assert r["sinLeer"] == 1
+        assert r["incidentes"][0]["plazo"]["dentroDePlazo"]        # 10 h de 72
+        assert api.get("/api/incidentes", headers=y).json()["incidentes"] == []   # a Beto no
+
+        assert api.post(f"/api/incidentes/{inc}/visto", headers=x).status_code in (200, 204)
+        assert api.get("/api/incidentes", headers=x).json()["sinLeer"] == 0
+
+
+class TestCuentaDePrueba:
+    """La cuenta que muestra la pantalla de inicio de sesión tiene que servir."""
+
+    def test_preparar_demo_deja_la_cuenta_lista(self, api, efs, efs_austral, base_limpia, url_base):
+        import importlib
+
+        import psycopg
+
+        import preparar_demo
+        from ingesta import config
+
+        # Como la dejaban las versiones anteriores: con un marcador en vez de hash.
+        with psycopg.connect(url_base) as conn:
+            conn.execute("INSERT INTO usuario (email, nombre, hash_password) "
+                         "VALUES (%s, 'Demo', 'demo-no-usar')", (config.USUARIO_EMAIL,))
+        importlib.reload(preparar_demo)
+        assert preparar_demo.main() == 0
+
+        r = api.post("/api/auth/sesion",
+                     json={"email": config.USUARIO_EMAIL, "password": config.USUARIO_CLAVE})
+        assert r.status_code == 200, r.text
+        cabeceras = {"Authorization": "Bearer " + r.json()["token"]}
+        assert {m["institucion"] for m in movimientos(api, cabeceras)} == {
+            "Banco Simulado SFA", "Banco Austral"}
+        assert preparar_demo.main() == 0                      # correrlo de nuevo no rompe nada

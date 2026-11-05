@@ -66,9 +66,19 @@ export function resumenDelMes(movimientos: Movimiento[], mes: string): ResumenMe
   };
 }
 
-/** Conexiones que no están al día, para el aviso del resumen. */
+/**
+ * Bancos cuyo dato no está completo, para el aviso del resumen (RF-35): no
+ * respondieron, se les venció el permiso, o lo último que llegó ya es viejo.
+ * Con alguno así, el disponible del mes no incluye lo más reciente de ese
+ * banco, y hay que decirlo en vez de mostrar el total como si estuviera completo.
+ *
+ * Las cartolas y el efectivo no cuentan: no hay un banco al que preguntarle,
+ * así que no pueden estar "atrasados" respecto de él.
+ */
 export function conexionesConProblema(conexiones: Conexion[]): Conexion[] {
-  return conexiones.filter((c) => c.estado !== "al_dia");
+  return conexiones.filter(
+    (c) => (c.fuente ?? "sfa") === "sfa" && (c.estado !== "al_dia" || c.datoAntiguo),
+  );
 }
 
 // ───────────────────── gasto de los últimos meses ─────────────────────

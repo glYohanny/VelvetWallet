@@ -1,8 +1,9 @@
 # Guía rápida de demostración
 
-Cómo levantar Velvet Wallet y mostrar un pago llegando. **Requiere dos terminales.**
+Cómo levantar Velvet Wallet y mostrar un pago llegando, dos bancos a la vez y uno que se cae.
 
-Solo hace falta tener instalados **Python 3.11+** y **Node 18+**.
+Hace falta **Python 3.11+**, **Node 18+** y el archivo `backend\.env` (credenciales de Neon y
+Atlas, y la clave de cifrado; no está en git).
 
 ## 🔑 Credenciales de prueba
 
@@ -11,56 +12,51 @@ Solo hace falta tener instalados **Python 3.11+** y **Node 18+**.
 | **Correo** | `demo@velvetwallet.cl` |
 | **Contraseña** | `velvet2026` |
 
-Aparecen escritas en la propia pantalla de inicio de sesión, así que no hay que recordarlas. También
-se puede **crear una cuenta nueva** desde el enlace *Crear una* — sirve para demostrar el registro.
-
-> La cuenta vive dentro de la aplicación mientras no exista el backend. Al reiniciar, las cuentas
-> creadas se pierden; la de prueba siempre está.
-
----
-
-## 1. Preparar (solo la primera vez)
-
-**Terminal 1 — el banco simulado:**
-
-```bash
-cd simulador
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-**Terminal 2 — la aplicación:**
-
-```bash
-cd movil
-npm install
-```
+Aparecen escritas en la propia pantalla de inicio de sesión. La cuenta la deja lista
+`python preparar_demo.py` (paso 2): la crea con esa contraseña y la vincula con los dos bancos
+como la clienta Camila Rojas, así que al entrar ya hay datos. También se puede **crear una cuenta
+nueva** desde el enlace *Crear una*, que sirve para demostrar el registro y la vinculación desde cero.
 
 ---
 
-## 2. Levantar (cada vez)
+## 1. Levantar
 
-**Terminal 1:**
+**Con un solo comando** (Windows, desde la carpeta del proyecto):
 
-```bash
-cd simulador
-.venv\Scripts\activate
-uvicorn app.main:app --port 8001
+```powershell
+.\iniciar.cmd
 ```
 
-**Terminal 2:**
+Abre una ventana por servicio: los dos bancos simulados (8001 y 8002), el backend (8000) y la app
+(8081). La primera vez instala las dependencias, así que tarda más.
 
-```bash
-cd movil
-npm run web
-```
+**A mano**, una terminal por servicio (con el entorno virtual activado en las de Python):
+
+| Terminal | Carpeta | Comando |
+|---|---|---|
+| 1 · Banco Simulado SFA | `simulador` | `uvicorn app.main:app --port 8001` |
+| 2 · Banco Austral | `simulador` | `$env:SFA_BANCO="austral"; uvicorn app.main:app --port 8002` |
+| 3 · Backend | `backend` | `uvicorn api.main:app --port 8000` |
+| 4 · App | `movil` | `npm run web` |
 
 Se abre el navegador en `http://localhost:8081`. Para verlo como teléfono: **F12** y luego
 **Ctrl+Shift+M**.
 
 > Si PowerShell bloquea el `activate`, corre antes:
 > `Set-ExecutionPolicy -Scope Process -Bypass`
+
+---
+
+## 2. Preparar la cuenta de prueba (una vez)
+
+Con los bancos y el backend arriba:
+
+```bash
+cd backend
+python preparar_demo.py
+```
+
+Se puede correr las veces que se quiera: si la cuenta ya está, solo vuelve a traer los datos.
 
 ---
 
@@ -122,15 +118,17 @@ separado, y los datos del que no respondió se siguen mostrando, marcados como d
 
 | Síntoma | Causa | Solución |
 |---|---|---|
-| "No se pudo conectar con la institución" | El simulador no está corriendo | Revisar la Terminal 1 |
+| "No se pudo conectar con la institución" | El banco simulado no está corriendo | Revisar su ventana (8001 u 8002) |
+| "Correo o contraseña incorrectos" con la cuenta de prueba | La base no tiene la cuenta de prueba | `python preparar_demo.py` desde `backend/` |
+| "No se pudo conectar con MongoDB (Atlas)" | La IP de este equipo no está permitida en Atlas | Agregarla en Atlas → Network Access |
 | El contador no cambia | Ya se sincronizó y no hay nada nuevo | Inyectar un pago antes |
-| Los datos vuelven al inicio | Se recargó la página | **No recargar durante la demo**: navegar con las pestañas de abajo |
 | `uvicorn no se reconoce` | El entorno virtual no está activado | `.venv\Scripts\activate` |
 
 ---
 
 ## 6. Volver al estado inicial
 
-**Reiniciar el simulador** (Ctrl+C y levantarlo de nuevo) y **recargar la app**. Los pagos
-inyectados viven en memoria: al reiniciar desaparecen y se vuelve a los 270 movimientos del
-historial. Conviene hacerlo antes de cada ensayo.
+**Reiniciar los simuladores** (Ctrl+C y levantarlos de nuevo). Los pagos inyectados viven en su
+memoria: al reiniciar desaparecen y cada banco vuelve a su historial original. Lo que ya se
+sincronizó queda en la base de Velvet: para empezar de cero, desvincula los bancos desde Cuentas, o
+borra la cuenta y vuelve a correr `python preparar_demo.py`. Conviene hacerlo antes de cada ensayo.

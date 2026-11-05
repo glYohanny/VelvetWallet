@@ -10,6 +10,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useRef, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 
+import { Aviso } from "@/components/Aviso";
 import { AvisoClasificacion } from "@/components/AvisoClasificacion";
 import { BarraCategorias } from "@/components/BarraCategorias";
 import { Boton } from "@/components/Boton";
@@ -31,8 +32,10 @@ import { useSesion } from "@/sesion/SesionContexto";
 import { ErrorSincronizacion } from "@/servicios/sincronizacion";
 import { claveMes, nombreMes, pesos } from "@/utils/formato";
 import { categoriaMasGrande, desglosar } from "@/utils/desglose";
+import type { Conexion } from "@/modelo/tipos";
 import {
   compararConMesAnterior,
+  conexionesConProblema,
   gastoUltimosMeses,
   mesAnterior,
   promedioMensual,
@@ -51,6 +54,13 @@ function describirResultado(r: { nuevos: number; actualizados: number }): string
 }
 
 /** Mensaje para el usuario según cómo volvió del sitio del banco. */
+/** Por qué el dato de un banco no está completo, en pocas palabras. */
+function problemaDe(c: Conexion): string {
+  if (c.estado === "sin_respuesta") return "no respondió";
+  if (c.estado === "autorizacion_vencida") return "tiene el permiso vencido";
+  return "no se actualiza hace rato";
+}
+
 function mensajeDeVuelta(v: VueltaDelBanco): string {
   if (v.banco === "rechazado") return "Rechazaste el acceso en tu banco. No se compartió nada.";
   if (v.motivo === "otro_cliente") {
@@ -176,6 +186,7 @@ export default function Inicio() {
   const porConectar = instituciones.filter((i) => !i.conectada).map((i) => i.nombre);
   const banco = bancoElegido ?? porConectar[0] ?? nombresBancos[0];
   const bancosVinculados = conexiones.filter((c) => (c.fuente ?? "sfa") === "sfa").length;
+  const conProblema = conexionesConProblema(conexiones);
 
   async function alSincronizar() {
     setResultado(null);
@@ -400,6 +411,18 @@ export default function Inicio() {
         </Aparecer>
       </Superficie>
 
+      {/* RF-35: si un banco no está al día, el disponible de arriba no incluye
+          lo más reciente de ese banco. Se dice, no se esconde. */}
+      {conProblema.length > 0 ? (
+        <View style={estilos.avisoBancos}>
+          <Aviso detalle="Tócalo para ver el estado de cada banco." onPress={() => router.push("/cuentas")}>
+            {conProblema.length === 1
+              ? `${conProblema[0].institucion} ${problemaDe(conProblema[0])}: el total no incluye lo más reciente de ese banco.`
+              : `${conProblema.length} bancos sin datos al día (${conProblema.map((c) => c.institucion).join(", ")}): el total no incluye lo más reciente de ellos.`}
+          </Aviso>
+        </View>
+      ) : null}
+
       {reautorizar || solicitando ? (
         <PanelAutorizacion
           motivo={reautorizar}
@@ -572,6 +595,7 @@ const estilos = StyleSheet.create({
   confirmarSi: { color: colores.acento, fontFamily: fuente.textoFuerte, fontSize: 14 },
   autorizar: { marginTop: espacio.m },
   elegirBanco: { marginTop: espacio.m, marginBottom: -espacio.s },
+  avisoBancos: { marginTop: espacio.l },
   cancelar: { alignItems: "center", paddingVertical: espacio.s, marginTop: espacio.xs },
   cancelarTexto: { color: colores.texto3, fontFamily: fuente.texto, fontSize: 14 },
   // ── resto ──

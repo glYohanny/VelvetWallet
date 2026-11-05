@@ -308,4 +308,15 @@ describe("conexionesConProblema", () => {
       "autorizacion_vencida",
     ]);
   });
+
+  it("un banco con permiso vigente pero con el dato viejo también cuenta (RF-35)", () => {
+    const viejo = { ...conexion("al_dia"), datoAntiguo: true };
+    expect(conexionesConProblema([viejo])).toHaveLength(1);
+  });
+
+  it("las cartolas y el efectivo no se reportan: no hay banco al que preguntarle", () => {
+    const cartola = { ...conexion("al_dia"), fuente: "cartola" as const, datoAntiguo: true };
+    const efectivo = { ...conexion("al_dia"), fuente: "manual" as const };
+    expect(conexionesConProblema([cartola, efectivo])).toEqual([]);
+  });
 });

@@ -33,7 +33,7 @@ El usuario debe poder responder tres preguntas en segundos:
 Desde la carpeta del proyecto, en Windows:
 
 ```powershell
-.\iniciar.cmd            # simulador (8001), backend (8000) y app (8081)
+.\iniciar.cmd            # los dos bancos (8001 y 8002), backend (8000) y app (8081)
 .\iniciar.cmd -SinApp    # solo simulador y backend
 .\iniciar.cmd -Detener   # cierra todo
 ```
@@ -51,12 +51,25 @@ respondan. Necesita `backend\.env` (credenciales de Neon y Atlas, no está en gi
 | `simulador/` | Entidad financiera simulada conforme a la API de Cuentas del SFA | Funcional |
 | `movil/` | Aplicación en React Native + Expo | Funcional |
 | `BD/` | Entorno de datos: PostgreSQL, MongoDB y Redis con Docker | Funcional |
-| `backend/` | API en FastAPI: ingesta, normalización y capas de inteligencia | Por iniciar |
-| `Fase 1/` | Evidencias entregadas de la primera fase de la asignatura | Entregado |
+| `backend/` | API en FastAPI: ingesta, normalización, clasificación, recurrencias, proyección y Ley 21.719 | Funcional |
+| `Fase 1/`, `Fase 2/` | Evidencias de cada fase de la asignatura | Entregado / en curso |
 
-La aplicación tiene hoy: registro e inicio de sesión, resumen del mes con gasto por categoría,
-lista de movimientos con filtros, detalle con trazabilidad, bandeja de revisión y sincronización
-con la institución. Los cálculos están cubiertos por 57 pruebas automatizadas.
+Qué hace hoy, de punta a punta:
+
+- **Tres fuentes de datos, un solo ledger.** La API del SFA (con varios bancos a la vez), cartolas
+  CSV y gastos anotados a mano, deduplicados entre sí.
+- **Inteligencia sobre los datos.** Clasificación automática que se abstiene cuando no sabe,
+  detección de gastos recurrentes, excedente del mes, flujo hasta el día de pago y metas
+  proyectadas con Monte Carlo.
+- **Correcciones del usuario** (recategorizar, excluir, duplicado, dividir) que nunca sobrescriben el
+  dato del banco.
+- **Ley 21.719.** Consentimiento por finalidad, bitácora, portabilidad, supresión, aviso de brechas y
+  cifrado en reposo.
+
+**353 pruebas automatizadas**: 224 del backend (`python -m pytest`) y 129 de la app (`npx jest`),
+más las comprobaciones del simulador. Qué requisito cubre cada una está en
+[`TRAZABILIDAD.md`](TRAZABILIDAD.md): de los 36 requisitos funcionales, 30 están cumplidos y 6
+parciales, con lo que falta de cada uno.
 
 ### Por qué existe el simulador
 
@@ -64,7 +77,8 @@ El SFA no está vigente, así que no es posible conectarse a instituciones reale
 implementa el lado **proveedor** del estándar contra la especificación pública de la CMF, lo que
 obliga a entender e implementar ambos lados y no solo el del consumidor.
 
-Corre en el puerto **8001**, separado del backend, para poder levantar los dos a la vez.
+Corre en el puerto **8001**, separado del backend, para poder levantar los dos a la vez. Un
+segundo banco, distinto, se levanta en el **8002** (`SFA_BANCO=austral`).
 
 ---
 
@@ -108,7 +122,15 @@ Para levantar las dos partes juntas y demostrar un pago llegando en vivo, ver
 
 ### Backend
 
-Por iniciar.
+```bash
+cd backend
+pip install -r requirements.txt
+cp .env.example .env          # credenciales de Postgres/MongoDB y la clave de cifrado
+uvicorn api.main:app --reload --port 8000
+```
+
+Documentación interactiva en `http://localhost:8000/docs`. Detalles (ingesta, cifrado, cartolas,
+correcciones, varios bancos) en [`backend/README.md`](backend/README.md).
 
 ---
 
