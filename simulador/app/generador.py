@@ -178,10 +178,12 @@ def movimientos_del_mes(anio, mes, rng, contador, perfil=None, prefijo=None):
             return "TXN-%s-%d%02d-%04d" % (prefijo, anio, mes, contador[0])
         return "TXN-%d%02d-%04d" % (anio, mes, contador[0])
 
-    # 1. El sueldo (o el último día del mes si es más corto)
-    movs.append(movimiento(
-        sig_id(), fecha(anio, mes, p["dia_sueldo"], 9, 5), "Abono", p["sueldo"],
-        glosa=p["glosa_sueldo"]))
+    # 1. El sueldo (o el último día del mes si es más corto). Una cuenta
+    #    secundaria en otro banco puede no recibirlo: el sueldo llega a uno solo.
+    if p.get("sueldo"):
+        movs.append(movimiento(
+            sig_id(), fecha(anio, mes, p["dia_sueldo"], 9, 5), "Abono", p["sueldo"],
+            glosa=p["glosa_sueldo"]))
 
     # 2. El arriendo / dividendo: monto fijo, día fijo (si el perfil tiene)
     if p.get("arriendo"):

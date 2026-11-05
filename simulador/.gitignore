@@ -28,3 +28,5 @@ env/
 # Es de cada máquina: no se versiona. Borrarlos = volver a los clientes de base.
 app/clientes_creados.json
 app/refresh_tokens.json
+app/refresh_tokens_*.json
+app/clientes_creados_*.json

@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from html import escape
 
+from app import banco
+
 _ESTILOS = """
 :root { --marino:#0B2545; --marino2:#13315C; --turquesa:#12A39A; --fondo:#EEF2F6;
         --texto:#1B2733; --suave:#5B6B7B; --linea:#D6DEE6; --error:#B42318; }
@@ -59,12 +61,12 @@ def _pagina(titulo: str, cuerpo: str) -> str:
     return f"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(titulo)} · Banco Simulado SFA</title>
+<title>{escape(titulo)} · {escape(banco.NOMBRE)}</title>
 <style>{_ESTILOS}</style></head>
 <body>
 <div class="pruebas">Entorno de pruebas · Entidad Financiera Simulada (EFS) del proyecto Velvet Wallet</div>
 <header><div class="marca"><div class="logo">B</div>
-<div><b>Banco Simulado SFA</b><span>Banca en línea · Personas</span></div></div></header>
+<div><b>{escape(banco.NOMBRE)}</b><span>Banca en línea · Personas</span></div></div></header>
 <main>{cuerpo}</main>
 <footer>Estás en el sitio de tu banco. Tu clave nunca se comparte con otras aplicaciones.</footer>
 </body></html>"""

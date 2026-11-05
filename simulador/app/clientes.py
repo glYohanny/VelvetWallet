@@ -21,10 +21,11 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from app import datos
+from app import banco, datos
 from app.generador import PERFIL_BASE, generar
 
-ARCHIVO_CREADOS = Path(__file__).parent / "clientes_creados.json"
+# Cada banco guarda sus clientes creados en vivo por separado (ver banco.py).
+ARCHIVO_CREADOS = banco.archivo("clientes_creados.json")
 
 
 # ─────────────────────────── RUT ───────────────────────────
@@ -94,6 +95,32 @@ PERFILES = {
         "pendientes": 2,
     },
 
+    # Cuenta en un segundo banco: el sueldo llega al otro, así que aquí solo
+    # hay compras con la tarjeta y un par de suscripciones. Es lo que tiene
+    # mucha gente: la cuenta sueldo en un banco y la tarjeta en otro.
+    "secundario": {
+        "sueldo": 0,
+        "dia_sueldo": 30,
+        "glosa_sueldo": "",
+        "arriendo": None,
+        "suscripciones": [
+            ("Amazon Prime", 6_990, 8, "Entretenimiento"),
+            ("iCloud",       2_900, 16, "Servicios"),
+        ],
+        "cuentas_hogar": [],
+        "comercios": [
+            ("Falabella",    "Vestuario",    12_000, 90_000),
+            ("Lider",        "Alimentos",     8_000, 45_000),
+            ("Copec",        "Transporte",   15_000, 40_000),
+            ("Mercado Libre", "Hogar",        6_000, 60_000),
+            ("Starbucks",    "Restaurantes",  3_500,  7_000),
+        ],
+        "compras_por_mes": (4, 9),
+        "sucias_por_mes": (0, 1),
+        "glosas_sucias": ["TRANSBANK*CL 2231", "MPAGO*FERIA 118"],
+        "pendientes": 1,
+    },
+
     # Familia: ingreso alto, dividendo, colegio, supermercado grande y retail.
     "familia": {
         "sueldo": 1_950_000,
@@ -132,7 +159,32 @@ PERFILES = {
 
 # ─────────────────────────── construcción de un cliente ───────────────────────────
 def _cuentas_generadas(numero: int, nombre: str, perfil: str) -> list[dict]:
-    base = "CTA-%d" % numero
+    base = "%s-%d" % (banco.PREFIJO_CUENTA, numero)
+    if perfil == "secundario":
+        return [
+            {
+                "accountId": base + "-1",
+                "accountType": "Cuenta Vista",
+                "nickname": "Cuenta de la tarjeta",
+                "status": "Activa",
+                "currency": "CLP",
+                "openingDate": "2024-02-01",
+                "ownerName": nombre.upper(),
+                "branch": "Puerto Montt",
+                "productName": "Cuenta Vista con Tarjeta",
+            },
+            {
+                "accountId": base + "-2",
+                "accountType": "Cuenta de Ahorro",
+                "nickname": "Ahorro",
+                "status": "Activa",
+                "currency": "CLP",
+                "openingDate": "2024-02-01",
+                "ownerName": nombre.upper(),
+                "branch": "Puerto Montt",
+                "productName": "Cuenta de Ahorro a la Vista",
+            },
+        ]
     return [
         {
             "accountId": base + "-1",
@@ -186,6 +238,7 @@ CREDITOS_POR_PERFIL: dict[str, list[dict]] = {
         },
     ],
     "estudiante": [],
+    "secundario": [],
     "familia": [
         {
             "productName": "Mutuo Hipotecario",
@@ -252,7 +305,7 @@ def _creditos_generados(numero: int, nombre: str, perfil: str) -> list[dict]:
             # El estándar entrega solo un enlace al calendario del proveedor,
             # nunca los datos de la tabla de amortización.
             "amortizationScheduleLink":
-                "https://banco-simulado.cl/creditos/LOAN-%d-%d/calendario" % (numero, i),
+                "https://%s/creditos/LOAN-%d-%d/calendario" % (banco.DOMINIO, numero, i),
         })
     return salida
 
@@ -275,16 +328,19 @@ def construir_cliente(rut: str, nombre: str, clave: str, perfil: str = "profesio
 
     cuentas = _cuentas_generadas(numero, nombre, perfil)
     principal, ahorro = cuentas[0]["accountId"], cuentas[1]["accountId"]
-    historial = generar(meses=meses, perfil=p, semilla=numero, prefijo=str(numero))
+    # La semilla depende del RUT y del banco: la misma persona tiene historias
+    # distintas en cada banco, y siempre la misma en cada uno.
+    historial = generar(meses=meses, perfil=p, semilla=numero + banco.SEMILLA,
+                        prefijo=banco.PREFIJO_MOVIMIENTO + str(numero))
 
     # La cuenta de ahorro: una transferencia de la cuenta principal.
     ahora = datetime.now().astimezone()
     ultima = min(historial[-1]["bookingDateTime"], ahora) if historial else ahora
     traspaso = {
-        "transactionID": "TXN-%d-AHO-0001" % numero,
+        "transactionID": "TXN-%s%d-AHO-0001" % (banco.PREFIJO_MOVIMIENTO, numero),
         "bookingDateTime": ultima,
         "transactionsType": "Abono",
-        "amount": float(round(p["sueldo"] * 0.1)),
+        "amount": float(round(p["sueldo"] * 0.1) if p["sueldo"] else 50_000),
         "currency": "CLP",
         "paymentPurposeCode": "Transferencia entre cuentas propias",
     }
@@ -353,6 +409,13 @@ def _registrar(cliente: dict) -> dict:
 
 
 def _cargar_base():
+    if banco.ID == "austral":
+        # Las mismas personas, con la misma clave de demostración, pero otra
+        # cuenta y otros gastos. Y una clienta que solo está en este banco.
+        _registrar(construir_cliente(formatear_rut(15432876), "Camila Rojas", "2468", "secundario"))
+        _registrar(construir_cliente(formatear_rut(21004567), "Diego Muñoz", "1357", "secundario"))
+        _registrar(construir_cliente(formatear_rut(17654321), "Valentina Soto", "8642", "profesional"))
+        return
     _registrar(_cliente_original())
     _registrar(construir_cliente(formatear_rut(15432876), "Camila Rojas", "2468", "familia"))
     _registrar(construir_cliente(formatear_rut(21004567), "Diego Muñoz", "1357", "estudiante"))

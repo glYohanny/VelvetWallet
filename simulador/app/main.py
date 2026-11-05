@@ -52,6 +52,7 @@ from pathlib import Path as RutaArchivo
 
 from pydantic import BaseModel, Field
 
+from app import banco
 from app import clientes as C
 
 # El backend de Velvet Wallet corre en el 8000. La EFS va en el 8001
@@ -59,7 +60,7 @@ from app import clientes as C
 BASE = "http://localhost:8001/accounts/v1"
 
 app = FastAPI(
-    title="Entidad Financiera Simulada (EFS) — SFA Chile",
+    title="%s — Entidad Financiera Simulada (EFS) del SFA" % banco.NOMBRE,
     version="2.0.0",
     description=(
         "EFS conforme a la API de Cuentas del Sistema de Finanzas Abiertas, "
@@ -125,7 +126,7 @@ TOKENS: dict[str, dict] = {}            # token de acceso -> {consentId, expira,
 # otra vez la clave al cliente (como en OAuth real). Se persisten en un archivo
 # para que sobrevivan a un reinicio de la EFS; si no, cada reinicio obligaría a
 # todos los usuarios a volver a vincular su banco.
-ARCHIVO_REFRESH = RutaArchivo(__file__).parent / "refresh_tokens.json"
+ARCHIVO_REFRESH = banco.archivo("refresh_tokens.json")
 REFRESH: dict[str, dict] = {}           # refresh token -> {client_id, rut, consentId, permisos, expira}
 
 # Cliente al que se atribuye una autorización que llega SIN RUT (compatibilidad
@@ -1017,7 +1018,7 @@ def agregar_credito(
         "currentBalance": float(restantes * cuota),
         "arrears": False,
         "amortizationScheduleLink":
-            "https://banco-simulado.cl/creditos/LOAN-%s-%d/calendario" % (numero, len(creditos) + 1),
+            "https://%s/creditos/LOAN-%s-%d/calendario" % (banco.DOMINIO, numero, len(creditos) + 1),
     }
     creditos.append(nuevo)
     C.DUENO_CREDITO[nuevo["loanID"]] = cliente["rut_normalizado"]

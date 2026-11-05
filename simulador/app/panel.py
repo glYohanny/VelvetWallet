@@ -14,7 +14,7 @@ servidor se inserta como texto, nunca como HTML.
 PANEL_HTML = r"""<!doctype html>
 <html lang="es"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Panel del simulador · Banco Simulado SFA</title>
+<title>Panel del simulador · __BANCO__</title>
 <style>
 :root { --marino:#0B2545; --marino2:#13315C; --turquesa:#12A39A; --fondo:#EEF2F6;
         --texto:#1B2733; --suave:#5B6B7B; --linea:#D6DEE6; --rojo:#B42318; --ambar:#8A5A00; }
@@ -72,7 +72,7 @@ ul.movs li:first-child { border-top:0; }
 <body>
 <div class="pruebas">Herramienta de demostración del equipo · no es parte del banco ni del estándar SFA</div>
 <header><div class="marca"><div class="logo">B</div>
-<div><b>Panel del simulador</b><span>Banco Simulado SFA · compras en vivo</span></div></div></header>
+<div><b>Panel del simulador</b><span>__BANCO__ · compras en vivo</span></div></div></header>
 <main>
   <section class="tarjeta">
     <h2>Cliente</h2>
@@ -330,3 +330,11 @@ cargarClientes().catch((e) => avisar("No se pudo cargar el simulador: " + e.mess
 </script>
 </body></html>
 """
+
+# El nombre del banco que es esta EFS (ver banco.py). Se reemplaza aparte y no
+# con un f-string porque la página trae mucho JavaScript con llaves.
+from html import escape as _escape  # noqa: E402
+
+from app import banco as _banco  # noqa: E402
+
+PANEL_HTML = PANEL_HTML.replace("__BANCO__", _escape(_banco.NOMBRE))
