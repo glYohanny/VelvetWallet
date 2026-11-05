@@ -42,6 +42,13 @@ Cierra lo que haya quedado corriendo en esos puertos, prepara `.venv` y las
 dependencias solo cuando cambian, abre una ventana por servicio y espera a que
 respondan. Necesita `backend\.env` (credenciales de Neon y Atlas, no está en git).
 
+Para mostrar la app **en un celular**, con el PC como servidor (APK, red, firewall y el paso a paso
+del día de la presentación), ver [`PRESENTACION.md`](PRESENTACION.md):
+
+```powershell
+.\iniciar.cmd -Presentacion -BaseLocal
+```
+
 ---
 
 ## Estructura del repositorio

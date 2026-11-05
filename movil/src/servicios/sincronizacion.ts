@@ -12,12 +12,7 @@
  */
 import type { Conexion, Movimiento } from "@/modelo/tipos";
 import { tokenActual } from "@/servicios/auth";
-
-/**
- * URL del backend. En web, localhost funciona. En un celular físico, cámbiala
- * por la IP de tu PC en la red (ej: "http://192.168.1.20:8000").
- */
-const API = "http://localhost:8000";
+import { api } from "@/servicios/servidor";
 
 /**
  * Error con un código opcional para que la pantalla sepa qué hacer:
@@ -60,7 +55,7 @@ export async function obtenerMovimientos(): Promise<Movimiento[]> {
 
   let respuesta: Response;
   try {
-    respuesta = await fetch(`${API}/api/movimientos?limite=500`, {
+    respuesta = await fetch(`${api()}/api/movimientos?limite=500`, {
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch {
@@ -90,7 +85,7 @@ export async function guardarCategoria(id: string, categoria: string): Promise<M
   }
   let respuesta: Response;
   try {
-    respuesta = await fetch(`${API}/api/movimientos/${encodeURIComponent(id)}/categoria`, {
+    respuesta = await fetch(`${api()}/api/movimientos/${encodeURIComponent(id)}/categoria`, {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ categoria }),
@@ -137,7 +132,7 @@ export async function obtenerInstituciones(): Promise<Institucion[]> {
   const token = await tokenActual();
   if (!token) return [];
   try {
-    const r = await fetch(`${API}/api/instituciones`, { headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch(`${api()}/api/instituciones`, { headers: { Authorization: `Bearer ${token}` } });
     if (!r.ok) return [];
     return ((await r.json()) as { instituciones: Institucion[] }).instituciones;
   } catch {
@@ -161,7 +156,7 @@ export async function iniciarVinculacion(retorno: string, institucion?: string):
   }
   let respuesta: Response;
   try {
-    respuesta = await fetch(`${API}/api/conexiones/iniciar`, {
+    respuesta = await fetch(`${api()}/api/conexiones/iniciar`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify({ retorno, ...(institucion ? { institucion } : {}) }),
@@ -192,7 +187,7 @@ export async function conectarBanco(institucion?: string): Promise<ResultadoCone
 
   let respuesta: Response;
   try {
-    respuesta = await fetch(`${API}/api/conexiones`, {
+    respuesta = await fetch(`${api()}/api/conexiones`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       // Sin institución, el backend sincroniza TODOS los bancos vinculados.
@@ -226,7 +221,7 @@ export type ConexionBanco = Conexion & {
 export async function obtenerConexiones(): Promise<ConexionBanco[]> {
   const token = await tokenActual();
   if (!token) return [];
-  const respuesta = await fetch(`${API}/api/conexiones`, {
+  const respuesta = await fetch(`${api()}/api/conexiones`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!respuesta.ok) return [];
@@ -242,7 +237,7 @@ export async function desvincularBanco(conexionId: string): Promise<void> {
   if (!token) {
     throw new ErrorSincronizacion("Tu sesión no está activa. Inicia sesión de nuevo.");
   }
-  const respuesta = await fetch(`${API}/api/conexiones/${conexionId}`, {
+  const respuesta = await fetch(`${api()}/api/conexiones/${conexionId}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
   });

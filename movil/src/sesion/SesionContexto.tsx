@@ -11,6 +11,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 
 import type { Credenciales, DatosRegistro, Usuario } from "@/modelo/tipos";
 import * as auth from "@/servicios/auth";
+import { cargarServidor } from "@/servicios/servidor";
 
 type ValorSesion = {
   usuario: Usuario | null;
@@ -32,11 +33,15 @@ export function ProveedorSesion({ children }: { children: ReactNode }) {
   const [usuario, setUsuario] = useState<Usuario | null>(null);
   const [cargando, setCargando] = useState(true);
 
-  // Al arrancar: ¿hay una sesión guardada de la vez anterior?
+  // Al arrancar: primero a qué servidor hablarle (la dirección que se haya
+  // guardado para usar la app desde un celular), y después, ¿hay una sesión
+  // guardada de la vez anterior? En ese orden: la primera petición ya tiene
+  // que ir al servidor correcto.
   useEffect(() => {
-    auth
-      .sesionGuardada()
+    cargarServidor()
+      .then(() => auth.sesionGuardada())
       .then((s) => setUsuario(s?.usuario ?? null))
+      .catch(() => setUsuario(null))
       .finally(() => setCargando(false));
   }, []);
 

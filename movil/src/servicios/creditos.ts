@@ -6,8 +6,7 @@
  * desglose, tabla de amortización— tampoco está acá.
  */
 import { tokenActual } from "@/servicios/auth";
-
-const API = "http://localhost:8000";
+import { api } from "@/servicios/servidor";
 
 export class ErrorCreditos extends Error {}
 
@@ -46,7 +45,7 @@ export async function obtenerCreditos(): Promise<{
 
   let r: Response;
   try {
-    r = await fetch(`${API}/api/creditos`, {
+    r = await fetch(`${api()}/api/creditos`, {
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch {

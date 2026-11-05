@@ -6,8 +6,7 @@
  * que la suya se pierda entre las demás.
  */
 import { tokenActual } from "@/servicios/auth";
-
-const API = "http://localhost:8000";
+import { api } from "@/servicios/servidor";
 
 export class ErrorIncidentes extends Error {}
 
@@ -39,7 +38,7 @@ async function pedir(ruta: string, metodo = "GET"): Promise<any> {
 
   let r: Response;
   try {
-    r = await fetch(`${API}/api/incidentes${ruta}`, {
+    r = await fetch(`${api()}/api/incidentes${ruta}`, {
       method: metodo,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     });

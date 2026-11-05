@@ -42,6 +42,9 @@ Abre una ventana por servicio: los dos bancos simulados (8001 y 8002), el backen
 Se abre el navegador en `http://localhost:8081`. Para verlo como teléfono: **F12** y luego
 **Ctrl+Shift+M**.
 
+Para verla en un celular de verdad, con el PC como servidor, ver
+[`PRESENTACION.md`](PRESENTACION.md).
+
 > Si PowerShell bloquea el `activate`, corre antes:
 > `Set-ExecutionPolicy -Scope Process -Bypass`
 

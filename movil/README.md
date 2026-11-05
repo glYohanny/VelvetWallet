@@ -10,6 +10,25 @@ npm run web        # en el navegador, para desarrollar
 npm start          # muestra un QR para abrirla en el celular con Expo Go
 ```
 
+## En un celular, con el PC como servidor
+
+La app le habla al backend en la dirección que decide `src/utils/servidor.ts`: la que se escribió
+en la pantalla de inicio de sesión (**Servidor > Cambiar**), o la de `EXPO_PUBLIC_API_URL`, o el
+mismo equipo que sirvió la página (en el navegador), o el PC desde el que se cargó (en Expo Go), y si
+no, `localhost`. Ningún servicio tiene la dirección escrita: todos usan `api()` de
+`src/servicios/servidor.ts`.
+
+Para compilar la APK (perfil `preview` de `eas.json`):
+
+```bash
+npm install -g eas-cli
+eas login
+eas build -p android --profile preview
+```
+
+El paso a paso de la presentación (red, firewall, bases en Docker) está en
+[`../PRESENTACION.md`](../PRESENTACION.md).
+
 ## Estructura
 
 ```

@@ -14,10 +14,10 @@
  */
 import type { Credenciales, DatosRegistro, SesionIniciada, Usuario } from "@/modelo/tipos";
 import { borrar, guardar, leer } from "@/servicios/almacenamiento";
+import { api } from "@/servicios/servidor";
 
 // URL del backend. En web, localhost funciona. En un celular físico, cámbiala
 // por la IP de tu PC en la red (ej: http://192.168.1.20:8000).
-const API = "http://localhost:8000";
 const CLAVE_SESION = "velvet.sesion";
 
 /** Error con mensaje pensado para mostrarse tal cual al usuario. */
@@ -42,7 +42,7 @@ export function problemaPassword(password: string): string | null {
 async function pedirSesion(ruta: string, cuerpo: object): Promise<SesionIniciada> {
   let respuesta: Response;
   try {
-    respuesta = await fetch(`${API}${ruta}`, {
+    respuesta = await fetch(`${api()}${ruta}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(cuerpo),

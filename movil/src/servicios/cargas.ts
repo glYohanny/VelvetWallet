@@ -13,8 +13,7 @@ import { Platform } from "react-native";
 
 import type { Movimiento } from "@/modelo/tipos";
 import { tokenActual } from "@/servicios/auth";
-
-const API = "http://localhost:8000";
+import { api } from "@/servicios/servidor";
 
 export class ErrorCarga extends Error {}
 
@@ -24,7 +23,7 @@ async function pedir<T>(ruta: string, opciones: RequestInit, porDefecto: string)
 
   let respuesta: Response;
   try {
-    respuesta = await fetch(`${API}${ruta}`, {
+    respuesta = await fetch(`${api()}${ruta}`, {
       ...opciones,
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     });
